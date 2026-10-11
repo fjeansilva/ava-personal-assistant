@@ -157,3 +157,26 @@ The runtime uses `DefaultResourceLoader` to discover `.pi/SYSTEM.md` for a trust
 - [Official minimal SDK example](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/sdk/01-minimal.ts)
 
 The API notes above were checked against the project's installed Pi SDK, version 1.1.0.
+
+## Telegram channel milestone
+
+The Telegram channel is implemented independently of Pi. Its current entry point supplies a simulated streaming conversation. The terminal retains its existing Pi connection; extracting the Pi handler, configurable session factory, AVA definition, and persistent chat-session mapping is the owner's next step.
+
+```mermaid
+flowchart LR
+    User["Private Telegram chat"] <--> API["Direct Bot API client"]
+    API <--> Channel["Telegram channel"]
+    Channel <--> Contract["Conversation contract"]
+    Contract <--> Fake["Simulated handler (current)"]
+    Contract -.-> Pi["Pi handler (owner's next step)"]
+```
+
+- `src/channels/contracts.ts` defines the handler, abort signal, text-delta callback, identity, and cleanup function without importing Pi.
+- `src/channels/telegram/bot-api.ts` owns HTTP calls and response validation. `fetch` is injectable for local tests; errors omit token-bearing request URLs.
+- `src/channels/telegram/channel.ts` owns authorization, polling, queues, commands, coalesced streaming previews, final delivery, and lifecycle. Polling continues while a handler runs. Cancellation interrupts the active request and clears its chat's pending queue.
+- `src/telegram.ts` wires the channel to a simulated handler. The owner will replace this factory with Pi-backed conversations; model configuration is not required for the preview.
+- `src/telegram-identify.ts` helps identify the owner locally before starting polling. It sends no messages and must not run alongside another poller for the same bot.
+
+One live conversation object is reused per chat and disposed on shutdown. The handler must honor its abort signal; shutdown waits for active handlers to settle. Pending work and offsets are held in memory. Session persistence, restart recovery, and delivery retries are not implemented by this channel. Advancing a polling offset acknowledges updates; it is not proof that their replies were delivered.
+
+Validation: fourteen new Telegram tests and four existing terminal tests pass without network or model requests. The owner confirmed receipt of a simulated Telegram reply. Real Pi integration remains untested because it is deliberately not connected yet.

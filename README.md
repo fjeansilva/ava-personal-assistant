@@ -36,6 +36,31 @@ AVA's persona is in `.pi/SYSTEM.md`, loaded by Pi for the trusted project. `AGEN
 
 Each application run creates a new Pi session. Messages within that run share one session; resuming a previous session is not implemented yet.
 
+## Telegram channel preview
+
+The Telegram channel currently uses simulated streaming replies. It does not load Pi, model settings, or AVA's persona. The owner will connect Pi afterward.
+
+Add these values to your existing local `.env` without replacing the model settings:
+
+```dotenv
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_ALLOWED_USER_IDS=your_numeric_user_id
+```
+
+Create a bot with [BotFather](https://t.me/BotFather) and keep its token private. If you need your user ID, run `npm run telegram:identify` and send the temporary phrase shown in the terminal to your bot in a private chat. Copy the resulting user-ID setting into `.env`. Use identification before starting the channel; it acknowledges earlier updates while waiting and sends no replies.
+
+```sh
+npm run telegram
+```
+
+Keep the process running and send a private text message to the bot. Only allowed users in private chats can invoke the handler. `/start` explains the preview, `/cancel` interrupts the active reply and clears queued requests, and Ctrl+C shuts down and disposes conversations. Run only one polling process per bot token.
+
+Replies use temporary streaming drafts followed by a final message. Long output is split into plain-text messages. The preview stores no chat history across restarts. Automatic reconnection, delivery retries, and durable queues are deferred; polling failures stop the process and must be addressed before restarting. A bot with an existing webhook is rejected rather than reconfigured.
+
+The integration point is `createConversation` in `src/telegram.ts`. Replace that simulated factory with your Pi-backed implementation of `src/channels/contracts.ts`; channels receive a handler and cleanup function, not a Pi session. Existing terminal and Pi modules are unchanged.
+
+See [the Telegram plan](./docs/telegram-channel-plan.md) for decisions, implementation ownership, and remaining Pi work.
+
 ## Development
 
 ```sh

@@ -16,6 +16,14 @@ Use Pi for the agent loop, model requests, context assembly, and session persist
 - Prefer small, understandable modules. Avoid speculative abstractions, additional frameworks, and dependencies that the current task does not need.
 - Report what changed, what was verified, and any remaining limitation. Do not claim a live model integration worked based only on a type check or local test.
 
+## Telegram implementation ownership
+
+The Telegram channel preview is implemented with simulated replies and no Pi/model calls. The owner explicitly wants to implement the Pi core himself for learning: extracting the handler, making the session factory configurable, defining AVA, adding persisted chat-to-session mappings, and connecting Pi. Do not implement those steps or move the existing terminal files unless asked.
+
+The Telegram entry point is `src/telegram.ts`; its `createConversation` callback is the connection point. Channel contracts live in `src/channels/contracts.ts`, and Telegram modules in `src/channels/telegram/`. `npm run telegram` runs the simulated channel; `npm run telegram:identify` discovers the owner's ID locally. Both use only Telegram environment settings. Keep the channel independent of Pi.
+
+`test/telegram.test.mjs` adds local tests for access restrictions, streaming, queue ordering, cancellation, API handling, and cleanup. Cancellation currently interrupts the active response and clears pending messages, following the owner's latest written choice. See `docs/telegram-channel-plan.md` for confirmed decisions and deferred recovery work.
+
 ## Repository layout
 
 | Path | Responsibility |
@@ -65,7 +73,7 @@ npm run typecheck
 npm test
 ```
 
-`npm test` builds the project and runs terminal tests without calling a model. `npm run build` builds separately. `npm run terminal` starts the real Pi-backed application and requires environment configuration and provider credentials.
+`npm test` builds the project and runs terminal and Telegram tests without network or model calls. `npm run build` builds separately. `npm run terminal` starts the real Pi-backed application and requires environment configuration and provider credentials.
 
 Test observable behavior, especially streaming, message ordering, error recovery, cancellation, and cleanup. For documentation-only changes, check Markdown structure, paths, links, and consistency with the current implementation.
 

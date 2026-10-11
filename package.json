@@ -7,7 +7,9 @@
     "test": "npm run build --silent && node --test test/*.test.mjs",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "terminal": "npm run build --silent && node --env-file=.env dist/terminal-preview.js"
+    "terminal": "npm run build --silent && node --env-file=.env dist/terminal-preview.js",
+    "telegram": "npm run build --silent && node --env-file=.env dist/telegram.js",
+    "telegram:identify": "npm run build --silent && node --env-file=.env dist/telegram-identify.js"
   },
   "keywords": [],
   "author": "",
