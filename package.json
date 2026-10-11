@@ -1,0 +1,23 @@
+{
+  "name": "ava-personal-assistant",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "npm run build --silent && node --test test/*.test.mjs",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "terminal": "npm run build --silent && node --env-file=.env dist/terminal-preview.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}
