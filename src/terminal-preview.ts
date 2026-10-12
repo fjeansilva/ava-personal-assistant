@@ -1,40 +1,14 @@
 import { runTerminal } from "./terminal.js";
 import { createAvaSession } from "./config/runtime.js"
+import { createMessageHandler } from "./core/handler.js";
 
 try {
   const avaSession = await createAvaSession();
 
   try {
     console.log("Ava terminal - powered by Pi.\n");
-
-    await runTerminal(async ({ message, write, signal }) => {
-      if (signal.aborted) return;
-
-      const unsubscribe = avaSession.subscribe((event) => {
-        if (
-          event.type === "message_update" &&
-          event.assistantMessageEvent.type === "text_delta"
-        ) {
-          write(event.assistantMessageEvent.delta);
-        }
-      });
-
-      const onAbort = () => {
-        void avaSession.abort().catch((error) => {
-          console.error("Cancellation failed:", error);
-        });
-      };
-
-      signal.addEventListener("abort", onAbort, { once: true});
-
-      try {
-        await avaSession.prompt(message);
-      } finally {
-        signal.removeEventListener("abort", onAbort);
-        unsubscribe();
-      }
-
-    });
+    const handleMessage = createMessageHandler(avaSession);
+    await runTerminal(handleMessage);
   } finally {
     avaSession.dispose();
   }
