@@ -18,7 +18,7 @@ export interface ModelConfig {
 
 export async function createSession(
     modelConfig: ModelConfig,
-    options: Pick<CreateAgentSessionOptions, "cwd" | "resourceLoader"> = {},
+    options: Pick<CreateAgentSessionOptions, "cwd" | "resourceLoader" | "sessionManager"> = {},
 ): Promise<AgentSession> {
     const modelRuntime = await ModelRuntime.create();
 

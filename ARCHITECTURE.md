@@ -6,13 +6,13 @@ Ava uses Pi as its agent harness. The application selects a model and supplies a
 
 The terminal is connected to Pi through `createMessageHandler(session)`, extracted by the owner into `src/core/handler.ts`. The entry point creates the session and handler, starts the terminal, and disposes the session on exit. The handler owns the per-message subscription, text streaming, and cancellation bridge.
 
-Telegram is implemented as a separate channel with simulated replies. It does not use the Pi handler yet.
+Telegram now uses the same Pi core and AVA configuration through its own application entry point. Each authorized private chat has a separate persistent Pi session. The owner confirmed that restarting the Telegram application resumes the conversation correctly.
 
-AVA-specific configuration and resource policy now live in `src/agents/ava/config.ts` and `src/agents/ava/resources.ts`. The terminal supplies both to `createSession(modelConfig, { cwd, resourceLoader })` in `src/core/session.ts`. The core does not import AVA settings or choose her context policy. Tools remain disabled with `noTools: "all"`. Calendar tools, personal memory, and Pi Durable are future work.
+AVA-specific configuration and resource policy now live in `src/agents/ava/config.ts` and `src/agents/ava/resources.ts`. The terminal supplies both to `createSession(modelConfig, { cwd, resourceLoader })` in `src/core/session.ts`. Telegram also supplies a chat-specific `sessionManager`. The core does not import AVA settings or choose her context policy. Tools remain disabled with `noTools: "all"`. Calendar tools, personal memory, and Pi Durable are future work.
 
 ## Current component diagram
 
-Solid arrows below describe implemented connections. The Telegram preview remains separate from the Pi conversation.
+All connections below are implemented. Terminal and Telegram reuse the same core functions while keeping separate live sessions and histories.
 
 ```mermaid
 flowchart LR
@@ -23,8 +23,8 @@ flowchart LR
     Config -->|"modelConfig"| Entry["terminal-preview.ts"]
     Resources -->|"Loaded resourceLoader"| Entry
     Entry -->|"modelConfig + cwd + resourceLoader"| Factory["Session factory<br/>core/session.ts"]
-    Factory -->|"Create once at terminal startup"| Session["Pi AgentSession"]
-    Entry -->|"createMessageHandler(session)"| Handler["createMessageHandler<br/>core/handler.ts"]
+    Factory -->|"Create once at terminal startup"| Session["Terminal Pi AgentSession"]
+    Entry -->|"createMessageHandler(session)"| Handler["Terminal handler<br/>core/handler.ts"]
     Entry -->|"runTerminal(handler)"| Terminal["Terminal interface<br/>terminal.ts"]
     Terminal -->|"message + signal"| Handler
     Handler -->|"prompt / abort"| Session
@@ -32,14 +32,27 @@ flowchart LR
     Handler -->|"write(delta)"| Terminal
     Session <-->|"Model request / response"| Model["Selected model"]
     Session --> History["Pi session storage"]
-    Telegram["Telegram channel"] <-->|"Message / simulated stream"| Simulated["Simulated conversation<br/>telegram.ts"]
+    Config --> TelegramApp["telegram.ts<br/>createConversation(chat)"]
+    Resources --> TelegramApp
+    TelegramApp --> Manager["Pi SessionManager.continueRecent<br/>Chat-specific directory"]
+    Manager -->|"Selected sessionManager"| TelegramApp
+    TelegramApp -->|"modelConfig + cwd + loader + manager"| Factory
+    Factory -->|"Create or restore one per chat"| TelegramSession["Telegram Pi AgentSession"]
+    TelegramApp -->|"Return handler + dispose"| Telegram["Telegram channel<br/>channels/telegram/channel.ts"]
+    Telegram -->|"message + signal"| TelegramHandler["Per-chat handler<br/>core/handler.ts"]
+    TelegramHandler -->|"prompt / abort"| TelegramSession
+    TelegramSession -->|"text_delta events"| TelegramHandler
+    TelegramHandler -->|"write(delta)"| Telegram
+    TelegramSession <-->|"Model request / response"| Model
+    TelegramSession --> ChatHistory["Pi JSONL files<br/>ava-telegram-chatId"]
+    Manager -->|"Open latest matching session"| ChatHistory
 ```
 
-`terminal-preview.ts` imports `modelConfig`, awaits `createAvaResourceLoader(cwd)`, and calls `createSession(modelConfig, { cwd, resourceLoader })`. It passes the resulting live session to `createMessageHandler` and owns session disposal. The loader and session receive the same working directory. The terminal and Telegram channel use structurally compatible message contracts, but only the terminal is currently connected to this Pi handler.
+`terminal-preview.ts` imports `modelConfig`, awaits `createAvaResourceLoader(cwd)`, and calls `createSession(modelConfig, { cwd, resourceLoader })`. It passes the resulting live session to `createMessageHandler` and owns session disposal. The loader and session receive the same working directory. The Telegram entry point composes the same factories for each chat and supplies a `Conversation` with a handler and disposal function. Channel modules remain independent of Pi; sharing factories does not share live sessions.
 
 ## Model and session setup
 
-The application entry point calls `createSession(modelConfig, options)` once at startup. The factory receives `provider`, `modelId`, and `thinkingLevel`, plus optional native Pi `cwd` and `resourceLoader` options, and returns `Promise<AgentSession>`.
+The terminal entry point calls `createSession(modelConfig, options)` once at startup. Telegram calls it lazily for each chat's first ordinary message in the current process. The factory receives `provider`, `modelId`, and `thinkingLevel`, plus optional native Pi `cwd`, `resourceLoader`, and `sessionManager` options, and returns `Promise<AgentSession>`.
 
 ```mermaid
 flowchart LR
@@ -53,7 +66,7 @@ flowchart LR
 
 `ModelConfig.thinkingLevel` reuses `NonNullable<CreateAgentSessionOptions["thinkingLevel"]>` from the installed SDK. This keeps the supported values aligned with Pi and makes the field required in the application contract. Runtime environment validation remains in AVA's `config.ts`.
 
-The second parameter uses `Pick<CreateAgentSessionOptions, "cwd" | "resourceLoader">`. This selects the SDK's existing types rather than defining a competing configuration API. The core forwards these options; AVA's entry point supplies the already-loaded resource loader. Without one, Pi uses its default loader. Session-manager selection is not exposed by this factory yet.
+The second parameter uses `Pick<CreateAgentSessionOptions, "cwd" | "resourceLoader" | "sessionManager">`. It reuses the SDK's types, and the core forwards these options to Pi. Both AVA entry points supply an already-loaded resource loader. Telegram also selects its persistent manager; the terminal leaves manager creation to Pi's default. Without a supplied loader, Pi uses its default loader.
 
 ## AVA configuration and context policy
 
@@ -197,7 +210,7 @@ src/
       channel.ts             Polling, authorization, queues, streaming, and cleanup
   terminal.ts                Input loop and streamed text output
   terminal-preview.ts        Create session and handler, run terminal, dispose session
-  telegram.ts                Telegram entry point with simulated conversations
+  telegram.ts                AVA Telegram composition and per-chat Pi session resume
   telegram-identify.ts       Local Telegram user-ID discovery
 test/
   terminal.test.mjs          Terminal behavior checks with local callbacks
@@ -208,16 +221,16 @@ test/
 | --- | --- | --- | --- |
 | `src/agents/ava/config.ts` | `AVA_*` environment values | Validate provider, model ID, and thinking level. | Export `modelConfig`; create no Pi runtime or session. |
 | `src/agents/ava/resources.ts` | `cwd` | Apply AVA policy using native Pi options and await resource loading. | Return a loaded `DefaultResourceLoader`; create no session. |
-| `src/core/session.ts` | `ModelConfig` and native `cwd` / `resourceLoader` options | Resolve the model and call Pi's `createAgentSession`. | Return a live `AgentSession`; the caller owns disposal. |
+| `src/core/session.ts` | `ModelConfig` and native `cwd` / `resourceLoader` / `sessionManager` options | Resolve the model and call Pi's `createAgentSession`. | Return a live `AgentSession`; the caller owns disposal. |
 | `src/core/handler.ts` | A live `AgentSession` | Adapt channel messages to Pi prompting, streaming, and cancellation. | Return `Conversation["handleMessage"]`; clean up each message's listeners. |
 | `src/terminal-preview.ts` | AVA config and resource factory, core factories, terminal interface | Compose one terminal conversation using the same `cwd` for resources and session. | Await resources, create session and handler, run the terminal, and dispose the session in `finally`. |
 | `src/terminal.ts` | A message handler | Read input, process messages sequentially, display reply chunks, and signal shutdown. | Own the terminal interface and its listeners. |
 | `src/channels/contracts.ts` | No runtime setup | Define channel messages, identity, conversation handling, and cleanup. | Supply types without a Pi dependency. |
 | `src/channels/telegram/` | Telegram settings and an injected conversation factory | Authorize users, poll updates, queue per chat, and deliver replies. | Manage channel lifecycle and call each conversation's cleanup. |
-| `src/telegram.ts` | Telegram modules and simulated conversations | Compose the Telegram preview. | Still makes no Pi/model calls. |
+| `src/telegram.ts` | Telegram settings, AVA config and resources, chat identity, core factories | Select each chat's persistent manager and compose its Pi conversation. | Return handler and session disposal to the channel; make real model calls through the handler. |
 | Pi SDK | Configuration, messages, and registered resources | Manage the agent loop, context, model requests, and session history. | Provide the live session used by the application. |
 
-The factory uses Pi's default persistent session manager. Each application run creates a new session, and messages within that run share its history. Continuing a previous saved session is not implemented yet.
+The terminal uses Pi's default persistent manager and creates a fresh session on each launch. Telegram supplies `SessionManager.continueRecent(cwd, sessionDir)` and resumes the most recent matching session in that chat's dedicated directory. Both reuse the same live object for messages within one conversation.
 
 ## Run the terminal application
 
@@ -242,11 +255,12 @@ AVA's resource factory uses Pi's native `.pi/SYSTEM.md` discovery while excludin
 
 - Keep the terminal independent of Pi through a small callback contract.
 - Keep the extracted handler independent of AVA configuration; it receives an existing session.
-- Pass model configuration and native resource options into `createSession`; keep AVA environment access and context policy in `src/agents/ava/`.
+- Pass model configuration, native resource options, and optional session-manager selection into `createSession`; keep AVA environment access and context policy in `src/agents/ava/`.
 - Reuse `DefaultResourceLoader` and SDK types; do not create a parallel context manager. Keep `.pi/SYSTEM.md` in its native location.
 - Keep session lifetime in application setup and per-message cleanup in the handler.
 - Do not introduce another agent loop or transcript store.
-- Use one Pi session per terminal conversation.
+- Use one Pi session per terminal conversation and one separate Pi session per Telegram chat.
+- Keep chat identity routing in application setup and persistence/context reconstruction in Pi's `SessionManager`. Use a directory per Telegram chat; no separate transcript or mapping database is needed for the current policy.
 - Let Pi own context assembly and history; do not duplicate them in the terminal.
 - Use Node's built-in readline and test tools; no additional runtime dependencies.
 - Keep tools disabled for the first conversation milestone.
@@ -257,32 +271,87 @@ AVA's resource factory uses Pi's native `.pi/SYSTEM.md` discovery while excludin
 - [Configuration: project Pi directory](https://pi.dev/docs/latest/configuration#project-pi-directory)
 - [SDK: subscribing to events](https://pi.dev/docs/latest/sdk#subscribing-to-events)
 - [SDK: session storage](https://pi.dev/docs/latest/sdk#session-storage)
+- [Official session-management example](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/sdk/11-sessions.ts)
 - [Official minimal SDK example](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/sdk/01-minimal.ts)
 
 The API notes above were checked against the project's installed Pi SDK, version 1.1.0.
 
 ## Telegram channel milestone
 
-The Telegram channel is implemented independently of Pi. Its current entry point supplies a simulated streaming conversation. The Pi handler and model-configurable session factory have been extracted and are used by the terminal. AVA's configuration and native resource policy are also implemented and used by the terminal. Persistent chat-session mapping and Telegram wiring remain owner work.
+The Telegram channel remains independent of Pi. Its entry point now supplies real AVA conversations: it loads AVA resources, selects each chat's persistent manager, calls `createSession`, and returns `createMessageHandler(session)` plus session disposal. Terminal and Telegram reuse the core and AVA configuration.
 
 ```mermaid
 flowchart LR
     User["Private Telegram chat"] <--> API["Direct Bot API client"]
     API <--> Channel["Telegram channel"]
     Channel <--> Contract["Conversation contract"]
-    Contract <--> Fake["Simulated handler (current)"]
-    Contract -.->|"Future Pi-backed factory"| Pi["createMessageHandler + per-chat Pi session"]
+    App["telegram.ts<br/>Pi-backed conversation factory"] -->|"Handler + disposal"| Contract
+    App --> Manager["Pi SessionManager<br/>Chat-specific resume"]
+    Contract <--> Pi["createMessageHandler + per-chat Pi session"]
+    Pi <--> History["Pi session JSONL files"]
 ```
 
 - `src/channels/contracts.ts` defines the handler, abort signal, text-delta callback, identity, and cleanup function without importing Pi.
 - `src/channels/telegram/bot-api.ts` owns HTTP calls and response validation. `fetch` is injectable for local tests; errors omit token-bearing request URLs.
 - `src/channels/telegram/channel.ts` owns authorization, polling, queues, commands, coalesced streaming previews, final delivery, and lifecycle. Polling continues while a handler runs. Cancellation interrupts the active request and clears its chat's pending queue.
-- `src/telegram.ts` wires the channel to a simulated handler. The owner will replace this factory with Pi-backed conversations; model configuration is not required for the preview.
+- `src/telegram.ts` wires the channel to the Pi handler and logs the chosen session ID and file path. Its model settings are loaded at startup; resources and sessions are initialized lazily per chat.
 - `src/telegram-identify.ts` helps identify the owner locally before starting polling. It sends no messages and must not run alongside another poller for the same bot.
 
-One live conversation object is reused per chat and disposed on shutdown. The handler must honor its abort signal; shutdown waits for active handlers to settle. Pending work and offsets are held in memory. Session persistence, restart recovery, and delivery retries are not implemented by this channel. Advancing a polling offset acknowledges updates; it is not proof that their replies were delivered.
+One live conversation object is reused per chat and disposed on shutdown. The handler must honor its abort signal; shutdown waits for active handlers to settle. Pending work and offsets are held in memory. Pi session persistence and conversation resume are supplied by application setup. Queue/offset recovery and delivery retries remain deferred. Advancing a polling offset acknowledges updates; it is not proof that their replies were delivered.
 
-Validation: fourteen new Telegram tests and four existing terminal tests pass without network or model requests. The owner confirmed receipt of a simulated Telegram reply. Real Pi integration remains untested because it is deliberately not connected yet.
+Validation: fourteen Telegram tests and four terminal tests exercise channel behavior without network or model requests. On 2026-10-12, the owner tested the real Pi-backed bot in Telegram and confirmed that the conversation resumed correctly after restarting. This is owner-confirmed live verification; the local channel tests do not exercise that restart path end to end.
+
+## Telegram session persistence and restart sequence
+
+`conversationId` is the Telegram chat ID supplied by the channel after its private-chat and allowed-user checks. `src/telegram.ts` derives the storage directory as:
+
+```ts
+join(getAgentDir(), "sessions", `ava-telegram-${conversationId}`)
+```
+
+With Pi's default agent directory, the layout is:
+
+```text
+~/.pi/agent/sessions/
+  ava-telegram-<chat-id>/
+    <timestamp>_<pi-session-id>.jsonl
+```
+
+The stable directory is the chat-to-history association. `SessionManager.continueRecent(cwd, sessionDir)` opens the most recent valid session matching the current `cwd`, or creates a new manager if none exists. Pi owns the JSONL format, writes conversation entries, and rebuilds the active branch and compacted context. AVA does not parse or replay transcript files manually.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Channel as Telegram channel
+    participant App as telegram.ts
+    participant Manager as Pi SessionManager
+    participant Disk as Chat session directory
+    participant Core as createSession
+    participant Pi as Per-chat AgentSession
+    User->>Channel: Send an authorized private text message
+    Channel->>App: createConversation with chat identity
+    App->>App: Load AVA resources and derive chat directory
+    App->>Manager: continueRecent(cwd, sessionDir)
+    Manager->>Disk: Find most recent valid session for this cwd
+    alt Matching session exists
+        Disk-->>Manager: Saved session entries
+    else No matching session
+        Manager->>Manager: Initialize a new persistent session
+    end
+    Manager-->>App: sessionManager
+    App->>Core: createSession(modelConfig, options with manager)
+    Core->>Pi: Create session and reconstruct saved context
+    Core-->>App: session
+    App-->>Channel: handleMessage and dispose
+    Channel->>Pi: Prompt through createMessageHandler
+    Pi->>Disk: Persist conversation entries
+    Pi-->>Channel: Stream text through the handler
+    Channel-->>User: Draft previews and final reply
+    Note over Channel,Pi: Reuse this live conversation for later messages
+    Note over App,Disk: After restart, the same directory restores history into a new live session
+```
+
+Session persistence and delivery recovery are separate: pending channel requests and polling offsets remain in memory, and generated responses are not automatically redelivered after a restart. This milestone assumes one bot, one active process, and a stable `cwd` and agent directory. Explicit model and thinking settings still come from AVA's current environment configuration.
 
 ## Evolution: AVA settings and resource policy separated from Pi setup
 
@@ -297,14 +366,24 @@ Completed by the owner on 2026-10-12:
 
 The component and sequence diagrams above show the implemented setup and message flow. This step changes which module chooses resources; Pi still owns resource discovery, context assembly, and session storage.
 
+## Evolution: Telegram connected to persistent Pi conversations
+
+Completed by the owner on 2026-10-12:
+
+- Added native `sessionManager` injection to `createSession`.
+- Replaced the simulated Telegram conversation factory with AVA resources, a chat-specific `SessionManager.continueRecent`, the shared Pi handler, and session disposal.
+- Kept terminal and Telegram histories separate, with stable storage paths derived from Telegram chat IDs.
+- Updated the startup and welcome messages to reflect real conversations.
+- Tested the real bot and confirmed session resume after restarting the application.
+
 ## Remaining steps
 
-1. Add persistent Telegram-chat-to-Pi-session mapping and resume behavior using Pi's session manager. Keep Telegram and terminal histories separate. Session-manager selection still needs to be exposed through application setup.
-2. Replace Telegram's simulated conversation factory with one that creates or resumes a Pi session, returns `createMessageHandler(session)`, and exposes session cleanup.
-3. Move the terminal interface and refactor its entry point when the owner is ready. Delivery recovery remains a later iteration.
+1. Move the terminal interface and refactor its entry point when the owner is ready; the current path still works.
+2. Add focused automated coverage for per-chat Pi persistence and resume. Current automated tests cover channel behavior through injected conversations.
+3. Implement the deferred delivery recovery policy when requested. Calendar tools, personal memory, and Pi Durable remain separate future milestones.
 
-These steps remain owner-led. AVA configuration, resource policy, and terminal wiring are complete; Telegram still uses simulated responses.
+Further implementation remains owner-led. Both current channels are now connected to Pi; Telegram conversation resume is implemented and confirmed by the owner.
 
 ## Latest verification
 
-On 2026-10-12, `npm run typecheck` and `npm test` passed, including compilation and all eighteen local tests (four terminal and fourteen Telegram). The documentation was checked against the current source, Markdown structure, local links, and `git diff --check`. These tests use local callbacks and a fake Telegram API; they do not validate a live Pi model conversation or the new resource policy end to end. No live model request was made. The assistant changed documentation only and preserved the owner's source implementation for the commit.
+The owner confirmed successful real Telegram session resume on 2026-10-12. For this commit, `npm run typecheck`, compilation through `npm test`, and all eighteen local tests passed. The documentation was checked against the source, Markdown structure, local links, and `git diff --check`. Automated tests use injected conversations and a fake Telegram API; they do not verify real Pi persistence or restart resume end to end. No additional live model or Telegram request was made by the coding assistant. The owner's implementation was preserved, with only trailing whitespace removed from `src/telegram.ts`.
