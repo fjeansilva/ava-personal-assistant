@@ -8,7 +8,7 @@ The terminal is connected to Pi through `createMessageHandler(session)`, extract
 
 Telegram is implemented as a separate channel with simulated replies. It does not use the Pi handler yet.
 
-The session factory already exists and configures `noTools: "all"`. Calendar tools, personal memory, and Pi Durable are future work.
+AVA-specific configuration and resource policy now live in `src/agents/ava/config.ts` and `src/agents/ava/resources.ts`. The terminal supplies both to `createSession(modelConfig, { cwd, resourceLoader })` in `src/core/session.ts`. The core does not import AVA settings or choose her context policy. Tools remain disabled with `noTools: "all"`. Calendar tools, personal memory, and Pi Durable are future work.
 
 ## Current component diagram
 
@@ -16,9 +16,14 @@ Solid arrows below describe implemented connections. The Telegram preview remain
 
 ```mermaid
 flowchart LR
-    Config["Model settings<br/>config/settings.ts"] --> Factory["createAvaSession()<br/>config/runtime.ts"]
+    subgraph Ava["AVA configuration and resource policy"]
+        Config["agents/ava/config.ts<br/>Validate model settings"]
+        Resources["agents/ava/resources.ts<br/>Configure and reload Pi DefaultResourceLoader"]
+    end
+    Config -->|"modelConfig"| Entry["terminal-preview.ts"]
+    Resources -->|"Loaded resourceLoader"| Entry
+    Entry -->|"modelConfig + cwd + resourceLoader"| Factory["Session factory<br/>core/session.ts"]
     Factory -->|"Create once at terminal startup"| Session["Pi AgentSession"]
-    Entry["terminal-preview.ts"] -->|"await createAvaSession()"| Factory
     Entry -->|"createMessageHandler(session)"| Handler["createMessageHandler<br/>core/handler.ts"]
     Entry -->|"runTerminal(handler)"| Terminal["Terminal interface<br/>terminal.ts"]
     Terminal -->|"message + signal"| Handler
@@ -30,11 +35,11 @@ flowchart LR
     Telegram["Telegram channel"] <-->|"Message / simulated stream"| Simulated["Simulated conversation<br/>telegram.ts"]
 ```
 
-`terminal-preview.ts` calls the factory and passes the resulting live session to `createMessageHandler`. It owns session disposal. The terminal and Telegram channel use structurally compatible message contracts, but only the terminal is currently connected to this Pi handler.
+`terminal-preview.ts` imports `modelConfig`, awaits `createAvaResourceLoader(cwd)`, and calls `createSession(modelConfig, { cwd, resourceLoader })`. It passes the resulting live session to `createMessageHandler` and owns session disposal. The loader and session receive the same working directory. The terminal and Telegram channel use structurally compatible message contracts, but only the terminal is currently connected to this Pi handler.
 
 ## Model and session setup
 
-The application entry point calls `createAvaSession()` once at startup. That factory performs the following setup.
+The application entry point calls `createSession(modelConfig, options)` once at startup. The factory receives `provider`, `modelId`, and `thinkingLevel`, plus optional native Pi `cwd` and `resourceLoader` options, and returns `Promise<AgentSession>`.
 
 ```mermaid
 flowchart LR
@@ -44,7 +49,41 @@ flowchart LR
     Config --> Runtime --> Session
 ```
 
-`settings.ts` reads and validates the environment. `runtime.ts` creates the Pi runtime, looks up the configured model, checks that it exists, and creates a session with the selected thinking level.
+`src/agents/ava/config.ts` reads and validates the environment. `src/core/session.ts` exports the `ModelConfig` interface and the `createSession` factory. The factory creates the Pi model runtime, resolves the supplied provider and model ID, rejects a missing model, and passes the supplied options to Pi's `createAgentSession` with the selected model and thinking level.
+
+`ModelConfig.thinkingLevel` reuses `NonNullable<CreateAgentSessionOptions["thinkingLevel"]>` from the installed SDK. This keeps the supported values aligned with Pi and makes the field required in the application contract. Runtime environment validation remains in AVA's `config.ts`.
+
+The second parameter uses `Pick<CreateAgentSessionOptions, "cwd" | "resourceLoader">`. This selects the SDK's existing types rather than defining a competing configuration API. The core forwards these options; AVA's entry point supplies the already-loaded resource loader. Without one, Pi uses its default loader. Session-manager selection is not exposed by this factory yet.
+
+## AVA configuration and context policy
+
+`src/agents/ava/config.ts` owns model selection from the environment. `src/agents/ava/resources.ts` owns AVA's resource-loading choices. Neither creates a session or implements an agent loop.
+
+`createAvaResourceLoader(cwd)` constructs Pi's `DefaultResourceLoader` with the supplied working directory and `getAgentDir()`, awaits `loader.reload()`, and returns it. Reloading happens before session creation because the SDK does not reload a caller-supplied loader automatically.
+
+| Resource or behavior | Current AVA policy |
+| --- | --- |
+| Model settings | Validate `AVA_MODEL_PROVIDER`, `AVA_MODEL_ID`, and `AVA_MODEL_THINKING_LEVEL` in `config.ts`. |
+| Context files such as `AGENTS.md` | Set `noContextFiles: true` to disable automatic context-file discovery, including coding instructions from the repository, parent directories, and Pi's agent directory. |
+| `.pi/SYSTEM.md` | Preserve Pi's native system-prompt discovery for the trusted project. No hardcoded `systemPromptOverride` is supplied. |
+| `APPEND_SYSTEM.md` | Keep `appendSystemPromptOverride: () => []`, so these additions are omitted. |
+| Skills and extensions | Leave Pi's normal discovery behavior unchanged. The context-file flag does not disable these resources. |
+| Session history | Keep Pi's session storage and context assembly. Disabling context files does not disable history or make other saved sessions automatically available. |
+| Tools | Keep `noTools: "all"` in the session factory for this milestone. |
+
+```mermaid
+flowchart LR
+    Policy["agents/ava/resources.ts<br/>Native loader options"] --> Loader["Pi DefaultResourceLoader<br/>await reload()"]
+    Persona[".pi/SYSTEM.md<br/>AVA persona"] -->|"Native discovery"| Loader
+    Guidelines["AGENTS.md and other context files"] -.->|"Excluded by noContextFiles"| Excluded["Not added automatically"]
+    Append["APPEND_SYSTEM.md"] -.->|"Empty append override"| Excluded
+    Loader -->|"resourceLoader supplied through core/session.ts"| Session["Pi AgentSession"]
+    History["Active session history"] --> Session
+    Session --> Context["Pi context assembly"]
+    Context --> Model["Selected model"]
+```
+
+These are application choices expressed through Pi's existing options. Pi still assembles the actual model context. The policy is applied when the entry point supplies AVA's loader; it is not a new global default for every core session, and it does not prevent extensions from contributing context through their own hooks.
 
 ## Terminal interface: implemented
 
@@ -79,7 +118,7 @@ For each message, the handler:
 4. Awaits `session.prompt(message)`.
 5. Removes the abort listener and subscription in `finally`.
 
-`src/terminal-preview.ts` creates one session with `createAvaSession()`, passes it to `createMessageHandler`, and awaits `runTerminal(handleMessage)`. Its outer `finally` disposes the session when the terminal finishes.
+`src/terminal-preview.ts` creates one session with `createSession(modelConfig, { cwd, resourceLoader })`, passes it to `createMessageHandler`, and awaits `runTerminal(handleMessage)`. Its outer `finally` disposes the session when the terminal finishes.
 
 The prompt and subscription must use the same live session object. Reuse that object across messages so Pi maintains the conversation history. The handler does not implement a queue: the terminal already awaits each invocation. If multiple channels later target one live session, serialization must be enforced across those callers; sharing handler code does not require sharing a session.
 
@@ -89,12 +128,20 @@ The prompt and subscription must use the same live session object. Reuse that ob
 sequenceDiagram
     actor User
     participant App as terminal-preview.ts
-    participant Factory as createAvaSession
+    participant Resources as AVA resource factory
+    participant Loader as Pi DefaultResourceLoader
+    participant Factory as createSession (core/session.ts)
     participant Terminal as Terminal interface
     participant Handler as createMessageHandler
     participant Pi as Pi AgentSession
     participant Model as Selected model
-    App->>Factory: await createAvaSession()
+    Note over App: Import modelConfig from agents/ava/config.ts and choose cwd
+    App->>Resources: await createAvaResourceLoader(cwd)
+    Resources->>Loader: Construct with AVA resource options
+    Resources->>Loader: await reload()
+    Loader-->>Resources: Resources loaded
+    Resources-->>App: resourceLoader
+    App->>Factory: await createSession(modelConfig, { cwd, resourceLoader })
     Factory->>Pi: Create session with selected model and resources
     Factory-->>App: session
     App->>Handler: createMessageHandler(session)
@@ -135,10 +182,12 @@ AGENTS.md                    Coding-agent guidelines
 .pi/
   SYSTEM.md                  AVA runtime persona
 src/
-  config/
-    settings.ts              Environment validation and model configuration
-    runtime.ts               Existing AVA-specific Pi session factory
+  agents/
+    ava/
+      config.ts              AVA environment validation and model configuration
+      resources.ts           AVA policy through Pi DefaultResourceLoader
   core/
+    session.ts               ModelConfig and createSession(modelConfig, options)
     handler.ts               createMessageHandler: prompt, stream, and abort
   channels/
     contracts.ts             Conversation identity, handler, and cleanup contract
@@ -155,15 +204,18 @@ test/
   telegram.test.mjs          Telegram checks with a fake API
 ```
 
-| Component | Responsibility |
-| --- | --- |
-| Model configuration | Validate provider, model ID, and thinking level. |
-| Session factory | Create Pi's runtime, resolve the model, load resources, and create the session. Currently imports AVA's global model configuration. |
-| Pi message handler | Adapt the channel contract to Pi's prompt, subscription, and cancellation APIs; clean up each message's listeners. |
-| Terminal interface | Read input, await the handler, display reply chunks, and handle shutdown. |
-| Application entry point | Create the session and handler, run the terminal, and dispose the session. |
-| Telegram channel | Receive authorized messages, serialize work per chat, and deliver streaming previews and final replies through an injected conversation factory. |
-| Pi | Manage the agent loop, context, model requests, and session history. |
+| Module | Input | Responsibility | Output / lifecycle |
+| --- | --- | --- | --- |
+| `src/agents/ava/config.ts` | `AVA_*` environment values | Validate provider, model ID, and thinking level. | Export `modelConfig`; create no Pi runtime or session. |
+| `src/agents/ava/resources.ts` | `cwd` | Apply AVA policy using native Pi options and await resource loading. | Return a loaded `DefaultResourceLoader`; create no session. |
+| `src/core/session.ts` | `ModelConfig` and native `cwd` / `resourceLoader` options | Resolve the model and call Pi's `createAgentSession`. | Return a live `AgentSession`; the caller owns disposal. |
+| `src/core/handler.ts` | A live `AgentSession` | Adapt channel messages to Pi prompting, streaming, and cancellation. | Return `Conversation["handleMessage"]`; clean up each message's listeners. |
+| `src/terminal-preview.ts` | AVA config and resource factory, core factories, terminal interface | Compose one terminal conversation using the same `cwd` for resources and session. | Await resources, create session and handler, run the terminal, and dispose the session in `finally`. |
+| `src/terminal.ts` | A message handler | Read input, process messages sequentially, display reply chunks, and signal shutdown. | Own the terminal interface and its listeners. |
+| `src/channels/contracts.ts` | No runtime setup | Define channel messages, identity, conversation handling, and cleanup. | Supply types without a Pi dependency. |
+| `src/channels/telegram/` | Telegram settings and an injected conversation factory | Authorize users, poll updates, queue per chat, and deliver replies. | Manage channel lifecycle and call each conversation's cleanup. |
+| `src/telegram.ts` | Telegram modules and simulated conversations | Compose the Telegram preview. | Still makes no Pi/model calls. |
+| Pi SDK | Configuration, messages, and registered resources | Manage the agent loop, context, model requests, and session history. | Provide the live session used by the application. |
 
 The factory uses Pi's default persistent session manager. Each application run creates a new session, and messages within that run share its history. Continuing a previous saved session is not implemented yet.
 
@@ -184,13 +236,16 @@ npm test
 
 The tests check streamed output, sequential messages, empty input, exit handling, errors, end of input, and cooperative cancellation. They do not make model requests.
 
-The runtime uses `DefaultResourceLoader` to discover `.pi/SYSTEM.md` for a trusted project. It does not set a hardcoded system prompt override, and it disables automatic `APPEND_SYSTEM.md` additions. Pi also discovers `AGENTS.md` as project context; the root file scopes its instructions to coding work. Keep credentials in your local environment or Pi's authentication storage.
+AVA's resource factory uses Pi's native `.pi/SYSTEM.md` discovery while excluding automatic context files and append-system additions, as described above. Keep credentials in your local environment or Pi's authentication storage.
 
 ## Decisions
 
 - Keep the terminal independent of Pi through a small callback contract.
 - Keep the extracted handler independent of AVA configuration; it receives an existing session.
-- Make the session factory configurable next; do not introduce another agent loop or transcript store.
+- Pass model configuration and native resource options into `createSession`; keep AVA environment access and context policy in `src/agents/ava/`.
+- Reuse `DefaultResourceLoader` and SDK types; do not create a parallel context manager. Keep `.pi/SYSTEM.md` in its native location.
+- Keep session lifetime in application setup and per-message cleanup in the handler.
+- Do not introduce another agent loop or transcript store.
 - Use one Pi session per terminal conversation.
 - Let Pi own context assembly and history; do not duplicate them in the terminal.
 - Use Node's built-in readline and test tools; no additional runtime dependencies.
@@ -198,6 +253,8 @@ The runtime uses `DefaultResourceLoader` to discover `.pi/SYSTEM.md` for a trust
 
 ## Pi references
 
+- [SDK: configuring a session](https://pi.dev/docs/latest/sdk#configuring-a-session)
+- [Configuration: project Pi directory](https://pi.dev/docs/latest/configuration#project-pi-directory)
 - [SDK: subscribing to events](https://pi.dev/docs/latest/sdk#subscribing-to-events)
 - [SDK: session storage](https://pi.dev/docs/latest/sdk#session-storage)
 - [Official minimal SDK example](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/sdk/01-minimal.ts)
@@ -206,7 +263,7 @@ The API notes above were checked against the project's installed Pi SDK, version
 
 ## Telegram channel milestone
 
-The Telegram channel is implemented independently of Pi. Its current entry point supplies a simulated streaming conversation. The Pi handler has been extracted and is used by the terminal. A configurable session factory, AVA definition, persistent chat-session mapping, and Telegram wiring remain owner work.
+The Telegram channel is implemented independently of Pi. Its current entry point supplies a simulated streaming conversation. The Pi handler and model-configurable session factory have been extracted and are used by the terminal. AVA's configuration and native resource policy are also implemented and used by the terminal. Persistent chat-session mapping and Telegram wiring remain owner work.
 
 ```mermaid
 flowchart LR
@@ -227,25 +284,27 @@ One live conversation object is reused per chat and disposed on shutdown. The ha
 
 Validation: fourteen new Telegram tests and four existing terminal tests pass without network or model requests. The owner confirmed receipt of a simulated Telegram reply. Real Pi integration remains untested because it is deliberately not connected yet.
 
-## Next step: a configurable session factory
+## Evolution: AVA settings and resource policy separated from Pi setup
 
-The handler extraction is complete. The next owner-led step is to separate AVA's settings from Pi initialization:
+Completed by the owner on 2026-10-12:
 
-1. Introduce a session factory in `src/core/session.ts` that receives validated model settings rather than importing AVA's module-level `modelConfig`.
-2. Keep model lookup, resource loading, and Pi session creation inside that factory. Keep tools disabled and pass the working directory and resource policy explicitly as this boundary is extracted.
-3. Let application setup supply AVA's configuration and keep session ownership and disposal outside the message handler. The later AVA definition belongs in `src/agents/ava/`.
-4. Apply the agreed `noContextFiles: true` policy for AVA while preserving `.pi/SYSTEM.md` discovery. This setting is not present in the current runtime yet.
+- Replaced `src/config/runtime.ts` with the reusable `src/core/session.ts` factory.
+- Moved `src/config/settings.ts` to `src/agents/ava/config.ts`, preserving model validation.
+- Added `src/agents/ava/resources.ts` to configure and reload Pi's native loader with AVA's context policy.
+- Extended `createSession` to accept native `cwd` and `resourceLoader` options through `Pick<CreateAgentSessionOptions, "cwd" | "resourceLoader">`.
+- Connected configuration, resource loading, session creation, and the existing handler in `src/terminal-preview.ts`.
+- Preserved streaming, cancellation, cleanup, session persistence, and disabled tools. The core has no import from `agents/ava`.
 
-```mermaid
-flowchart LR
-    Config["AVA configuration"] -->|"Explicit input"| Factory["Configurable session factory<br/>core/session.ts — next"]
-    Factory --> Session["Pi AgentSession"]
-    Session -->|"Passed into"| Handler["createMessageHandler<br/>core/handler.ts — implemented"]
-    Handler -->|"Callback supplied to"| Terminal["Terminal interface — implemented"]
-```
+The component and sequence diagrams above show the implemented setup and message flow. This step changes which module chooses resources; Pi still owns resource discovery, context assembly, and session storage.
 
-This is a dependency and setup diagram, not the message direction. For this step, preserve the terminal's current streaming and cancellation behavior. Persistent per-chat sessions, Telegram–Pi wiring, the terminal folder move, and delivery recovery follow separately; they are not part of the completed handler extraction.
+## Remaining steps
+
+1. Add persistent Telegram-chat-to-Pi-session mapping and resume behavior using Pi's session manager. Keep Telegram and terminal histories separate. Session-manager selection still needs to be exposed through application setup.
+2. Replace Telegram's simulated conversation factory with one that creates or resumes a Pi session, returns `createMessageHandler(session)`, and exposes session cleanup.
+3. Move the terminal interface and refactor its entry point when the owner is ready. Delivery recovery remains a later iteration.
+
+These steps remain owner-led. AVA configuration, resource policy, and terminal wiring are complete; Telegram still uses simulated responses.
 
 ## Latest verification
 
-The handler extraction passed `npm run typecheck` and `git diff --check` on 2026-10-12. This confirmed type compatibility and a source review of the terminal wiring; no live model request or test-suite rerun was performed for that review. The eighteen passing tests mentioned in the Telegram milestone refer to the earlier channel implementation. This architecture update changes documentation only.
+On 2026-10-12, `npm run typecheck` and `npm test` passed, including compilation and all eighteen local tests (four terminal and fourteen Telegram). The documentation was checked against the current source, Markdown structure, local links, and `git diff --check`. These tests use local callbacks and a fake Telegram API; they do not validate a live Pi model conversation or the new resource policy end to end. No live model request was made. The assistant changed documentation only and preserved the owner's source implementation for the commit.

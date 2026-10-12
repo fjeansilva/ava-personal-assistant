@@ -18,7 +18,7 @@ Use Pi for the agent loop, model requests, context assembly, and session persist
 
 ## Telegram implementation ownership
 
-The Telegram channel preview is implemented with simulated replies and no Pi/model calls. The owner has extracted `createMessageHandler` into `src/core/handler.ts` and connected it to the terminal. He wants to implement the remaining Pi core himself for learning: making the session factory configurable, defining AVA, adding persisted chat-to-session mappings, and connecting Pi to Telegram. Do not implement those steps or move the existing terminal files unless asked.
+The Telegram channel preview is implemented with simulated replies and no Pi/model calls. The owner has extracted `createMessageHandler` into `src/core/handler.ts`, `createSession(modelConfig, options)` into `src/core/session.ts`, and AVA configuration and resource policy into `src/agents/ava/`. The terminal composes all of them. He wants to implement the remaining Pi integration himself for learning: adding persisted chat-to-session mappings and connecting Pi to Telegram. Do not implement those steps or move the existing terminal files unless asked.
 
 The Telegram entry point is `src/telegram.ts`; its `createConversation` callback is the connection point. Channel contracts live in `src/channels/contracts.ts`, and Telegram modules in `src/channels/telegram/`. `npm run telegram` runs the simulated channel; `npm run telegram:identify` discovers the owner's ID locally. Both use only Telegram environment settings. Keep the channel independent of Pi.
 
@@ -28,11 +28,12 @@ The Telegram entry point is `src/telegram.ts`; its `createConversation` callback
 
 | Path | Responsibility |
 | --- | --- |
-| `src/config/settings.ts` | Read and validate model configuration from the environment. |
-| `src/config/runtime.ts` | Create the Pi model runtime, load resources, resolve the model, and create an agent session. |
+| `src/agents/ava/config.ts` | Read and validate AVA model configuration from the environment. |
+| `src/agents/ava/resources.ts` | Apply AVA context policy with Pi's native `DefaultResourceLoader`, await `reload()`, and return the loader. |
+| `src/core/session.ts` | Export `ModelConfig` and `createSession(modelConfig, options)`; resolve the model, forward native `cwd` / `resourceLoader` options, and return a live Pi session without importing AVA settings or policy. |
 | `src/terminal.ts` | Provide a terminal input loop and streaming-output callback, independent of Pi. |
 | `src/core/handler.ts` | Export `createMessageHandler(session)` to adapt channel messages to Pi prompting, streamed events, cancellation, and per-message cleanup. |
-| `src/terminal-preview.ts` | Create one Pi session and its handler, run the terminal, and dispose the session. Despite its name, this entry point makes real model requests. |
+| `src/terminal-preview.ts` | Load AVA settings and resources, call `createSession(modelConfig, { cwd, resourceLoader })`, create the handler, run the terminal, and dispose the session. Despite its name, this entry point makes real model requests. |
 | `.pi/SYSTEM.md` | Define AVA's runtime persona through Pi's project system-prompt convention. |
 | `test/terminal.test.mjs` | Test terminal behavior with local callbacks and Node's built-in test runner. |
 | `ARCHITECTURE.md` | Document responsibilities, lifecycle, and Mermaid diagrams. |
@@ -52,11 +53,12 @@ The Telegram entry point is `src/telegram.ts`; its `createConversation` callback
 - Create one session per terminal conversation and reuse that same live object for prompting and subscriptions.
 - Subscribe before prompting, forward text-delta events to `write`, and await each prompt before processing another message.
 - Bridge the terminal's abort signal to `session.abort()`. Remove listeners and subscriptions in `finally` blocks and dispose the session when the interface closes.
-- Keep terminal UI code independent of Pi. Session setup belongs in the runtime, per-message Pi operations in `src/core/handler.ts`, and session ownership in the entry point.
+- Keep terminal UI code independent of Pi. Session setup belongs in `src/core/session.ts`, per-message Pi operations in `src/core/handler.ts`, and session ownership in the entry point. Keep environment validation in `src/agents/ava/config.ts` and resource policy in `src/agents/ava/resources.ts`. Pass values and the loaded resource loader into the core; do not add AVA-specific imports inside the session factory.
 - Let Pi own context assembly and history. Do not add a parallel transcript store or agent loop without a concrete requirement.
 - Preserve `noTools: "all"` until tool integration is requested.
 - Use `DefaultResourceLoader` and `.pi/SYSTEM.md` for project prompt discovery. A hardcoded `systemPromptOverride` takes precedence over the discovered file.
-- Pi also discovers `AGENTS.md` as project context. These coding guidelines apply to repository work; they do not replace AVA's persona.
+- Preserve AVA's `noContextFiles: true` policy and empty `appendSystemPromptOverride`. Automatic `AGENTS.md` discovery is disabled for AVA, while `.pi/SYSTEM.md` and session history remain available through Pi. These coding guidelines still apply to agents working on this repository.
+- Await the AVA loader's `reload()` before passing it to the session. Use the same `cwd` for both. Reuse native SDK options and types instead of introducing a parallel context manager.
 
 ## Configuration and private data
 

@@ -21,8 +21,9 @@ This plan adds Telegram as a second conversation channel for AVA. It also shapes
 
 - `src/terminal.ts` doesn't depend on Pi. It passes a handler `{ message, write, signal }`.
 - `src/core/handler.ts` exports `createMessageHandler(session)`, extracted by the owner. `src/terminal-preview.ts` creates it from one Pi session, passes it to the terminal, and retains session disposal.
-- `src/config/settings.ts` validates the `AVA_*` model variables when it is imported and exports a global `modelConfig`.
-- `src/config/runtime.ts` creates the session from that global config. Its `DefaultResourceLoader` reads files from `process.cwd()`, so it also loads this repository's `AGENTS.md` (the coding guidelines) as AVA's context.
+- `src/agents/ava/config.ts` validates the `AVA_*` model variables when it is imported and exports a global `modelConfig`.
+- `src/agents/ava/resources.ts` creates and reloads Pi's `DefaultResourceLoader` with `noContextFiles: true` and an empty append-system override, preserving `.pi/SYSTEM.md` discovery.
+- `src/core/session.ts` exports `createSession(modelConfig, options)`. The terminal supplies AVA settings, `cwd`, and the loaded resource loader. The old `src/config/runtime.ts` has been removed; the core does not choose AVA's context policy.
 - The installed Pi SDK offers `SessionManager.inMemory()`, `create()`, and `continueRecent()`. `DefaultResourceLoader` offers `noContextFiles`, `noSkills`, `noExtensions`, `systemPrompt`, and `appendSystemPrompt`.
 - The Telegram channel now uses the Bot API directly and a simulated streaming handler. It imports no Pi runtime and makes no model calls.
 - The owner confirmed receiving the simulated response in Telegram. Eighteen local tests pass, including the existing terminal tests.
@@ -34,8 +35,8 @@ Pi owns the agent loop, model requests, context assembly, sessions, and tools. E
 
 Resource and configuration boundaries:
 
-1. **Context policy (confirmed, pending implementation).** Set `noContextFiles: true` in AVA's `DefaultResourceLoader` so coding guidelines such as `AGENTS.md` are not automatically added to her context. Keep the persona in `.pi/SYSTEM.md`; disabling context-file discovery does not require moving it or disabling system-prompt discovery. Preserve this policy when extracting the session factory. Resource policies for other agents can be introduced when needed.
-2. **Global settings.** The session factory reads a module-level config. It should take the agent's config as a parameter.
+1. **Context policy (implemented).** `src/agents/ava/resources.ts` sets `noContextFiles: true` in Pi's `DefaultResourceLoader` so coding guidelines such as `AGENTS.md` are not automatically added to AVA's context. The persona stays in `.pi/SYSTEM.md`; context-file discovery is separate from system-prompt discovery and session history. The empty append-system override is preserved. Other resource discovery keeps Pi's defaults. The loader is reloaded before session creation; no custom context manager is introduced.
+2. **Model settings and resource injection (implemented).** `createSession(modelConfig, options)` accepts validated model configuration and `Pick<CreateAgentSessionOptions, "cwd" | "resourceLoader">`. `src/terminal-preview.ts` chooses AVA's settings and loader and passes the same `cwd` to both loader and session. The core forwards native options to Pi without importing AVA modules. Session-manager selection remains pending.
 
 Principle: **draw the boundaries now and build the framework later.** Extract a shared package once a second agent actually needs this code.
 
@@ -50,15 +51,17 @@ flowchart LR
     Channel -->|"handleMessage({ message, write, signal })"| Handler["core/handler<br/>(shared)"]
     TermChannel -->|"handleMessage({ message, write, signal })"| Handler
     Handler -->|"prompt / subscribe / abort"| Session["Pi AgentSession"]
-    Agent["agents/ava<br/>(config, context policy)"] -->|"createAgentSession(config)"| Session
+    Agent["agents/ava<br/>config.ts + resources.ts (implemented)"] -->|"modelConfig + loaded resourceLoader"| App["Application entry points"]
+    App -->|"modelConfig + cwd + resourceLoader"| Factory["core/session<br/>createSession(modelConfig, options)"]
+    Factory -->|"Pi createAgentSession"| Session
     Channel -->|"sendMessage"| TG
 ```
 
 | Layer | Contents | Shared or per agent |
 | --- | --- | --- |
 | Channels (`src/channels/terminal.ts`, `src/channels/telegram/`) | Input/output only, connected through the `{ message, write, signal }` handler. | Shared |
-| Pi core (`src/core/session.ts`, `src/core/handler.ts`) | `createAgentSession(config)` with the model, thinking level, and resources passed in, plus the shared prompt/subscribe/abort handler. | Shared |
-| Agent definition (`src/agents/ava/`) | AVA's config: env prefix, context policy, and later her tools. Her persona remains in `.pi/SYSTEM.md`. | Per agent |
+| Pi core (`src/core/session.ts`, `src/core/handler.ts`) | Implemented: `createSession(modelConfig, options)` with native resource-loader injection, and the prompt/subscribe/abort handler. Session-manager selection remains pending. | Shared |
+| Agent definition (`src/agents/ava/`) | Implemented: `config.ts` validates model settings; `resources.ts` configures and reloads Pi's native loader. Tools come later. Her persona remains in `.pi/SYSTEM.md`. | Per agent |
 | Entry points (`src/terminal.ts`, `src/telegram.ts`) | Combine one agent with one channel. | Per agent and channel |
 
 ## Channel boundaries and future channels
@@ -74,7 +77,7 @@ Confirmed direction: Telegram is the next channel. WhatsApp and a web chat inter
 ```mermaid
 flowchart LR
     Terminal["Terminal (existing)"] --> Conversation["Shared AVA conversation code"]
-    Telegram["Telegram (planned)"] --> Conversation
+    Telegram["Telegram preview; Pi wiring planned"] -.-> Conversation
     WhatsApp["WhatsApp (future)"] -.-> Conversation
     Web["Web chat (future)"] -.-> Conversation
     Conversation --> Pi["Pi harness"]
@@ -109,20 +112,20 @@ Design choices (confirmed decisions are marked; the other choices remain proposa
 
 These are validated in a separate settings module, so the terminal never needs a bot token.
 
-## Planned files
+## Files and implementation status
 
 | File | Change |
 | --- | --- |
 | `src/core/handler.ts` | **Implemented by the owner.** Exports `createMessageHandler(session)`; the terminal uses it. |
-| `src/core/session.ts` | **New** (from `config/runtime.ts`). `createAgentSession(config)` takes the model and resources as parameters. |
-| `src/agents/ava/` | **New.** AVA's configuration and context policy. Keep the persona in `.pi/SYSTEM.md`. |
-| `src/channels/terminal.ts` | Moved from `src/terminal.ts`. Behavior doesn't change. |
-| `src/channels/telegram/bot-api.ts` | **New.** A small Bot API client (`getUpdates`, `sendMessageDraft`, `sendMessage`, and progress indication as needed). `fetch` is passed in so tests can replace it. |
-| `src/channels/telegram/channel.ts` | **New.** Polling loop, allowed-user check, per-chat queue, commands, streaming previews, final delivery, and splitting. Receives a conversation factory that returns a message handler and a cleanup function; does not receive or import a Pi session. |
-| `src/channels/telegram/settings.ts` | **New.** Validates `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_USER_IDS`. |
-| `src/terminal.ts`, `src/telegram.ts` | Entry points that combine AVA with a channel. They replace `terminal-preview.ts`. |
-| `package.json` | Adds a `"telegram"` script that builds the code and runs the entry point with `.env`. |
-| `test/telegram.test.mjs` | **New.** Uses a fake Bot API, so no model or network is called. |
+| `src/core/session.ts` | **Implemented by the owner.** `createSession(modelConfig, options)` receives model settings and native `cwd` / `resourceLoader` options. Replaces the removed `config/runtime.ts`. |
+| `src/agents/ava/config.ts`, `src/agents/ava/resources.ts` | **Implemented by the owner.** AVA's model configuration and policy through Pi's resource loader. The persona stays in `.pi/SYSTEM.md`. |
+| `src/channels/terminal.ts` | **Planned.** Moved from `src/terminal.ts`. Behavior doesn't change. |
+| `src/channels/telegram/bot-api.ts` | **Implemented.** A small Bot API client (`getUpdates`, `sendMessageDraft`, `sendMessage`, and progress indication as needed). `fetch` is passed in so tests can replace it. |
+| `src/channels/telegram/channel.ts` | **Implemented.** Polling loop, allowed-user check, per-chat queue, commands, streaming previews, final delivery, and splitting. Receives a conversation factory that returns a message handler and a cleanup function; does not receive or import a Pi session. |
+| `src/channels/telegram/settings.ts` | **Implemented.** Validates `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_USER_IDS`. |
+| `src/terminal.ts`, `src/telegram.ts` | **Target entry points.** Currently `terminal-preview.ts` composes the real AVA session, `terminal.ts` is the terminal input loop, and `telegram.ts` supplies simulated conversations. |
+| `package.json` | **Implemented.** Adds a `"telegram"` script that builds the code and runs the entry point with `.env`. |
+| `test/telegram.test.mjs` | **Implemented.** Uses a fake Bot API, so no model or network is called. |
 | `README.md`, `ARCHITECTURE.md`, `AGENTS.md` | Bot setup, updated diagrams, and the new layout table. |
 
 ### Tests
@@ -132,7 +135,7 @@ These are validated in a separate settings module, so the terminal never needs a
 - Messages in a chat are handled in order.
 - After an error, the bot reports it and still handles the next message.
 - `/cancel` is received during an active generation, bypasses the queue, aborts the reply, and stops preview updates.
-- Sessions are isolated by chat, resume after restart, and are disposed on shutdown.
+- Conversations are isolated by chat and disposed on shutdown. Pi session resume after restart still needs tests when persistence is implemented.
 
 ## Implementation order and ownership
 
@@ -141,7 +144,7 @@ Confirmed sequence: build and test the channel without a model first. The owner 
 1. **Owner — completed:** create the Telegram bot and configure its token and allowed user ID locally.
 2. **Coding assistant — completed:** add the channel contract, settings, direct Bot API client, per-chat queue, streaming previews, cancellation, cleanup, and simulated reply entry point.
 3. **Coding assistant — completed:** add the local identification helper, run type checking and the eighteen local tests. The owner confirmed the live simulated response arrived in Telegram.
-4. **Owner — handler extraction completed:** `src/core/handler.ts` exports `createMessageHandler(session)` and is connected to the terminal. **Next:** create the configurable session factory and define AVA's configuration. Apply the agreed context policy while keeping `.pi/SYSTEM.md` in place.
+4. **Owner — completed:** extract `createMessageHandler(session)` and `createSession(modelConfig, options)`; separate AVA's `config.ts` and `resources.ts`; connect them through the terminal entry point. The native loader now applies the agreed context-file policy while keeping `.pi/SYSTEM.md` in place.
 5. **Owner:** add chat-to-Pi-session persistence and resume behavior, then replace the simulated conversation factory with the Pi-backed factory.
 6. **Owner:** complete the terminal folder move and entry-point refactor when ready. The terminal input module is still in its original location; its entry point now uses the extracted handler.
 7. Verify real model behavior after the owner connects Pi, and update the diagrams and setup instructions as each step is completed.
@@ -149,6 +152,9 @@ Confirmed sequence: build and test the channel without a model first. The owner 
 ### Implemented files
 
 - `src/core/handler.ts`: the extracted Pi message handler, connected through `src/terminal-preview.ts`.
+- `src/core/session.ts`: `ModelConfig` and `createSession(modelConfig, options)` with native `cwd` / `resourceLoader` forwarding.
+- `src/agents/ava/config.ts`: AVA model environment validation.
+- `src/agents/ava/resources.ts`: AVA's native Pi loader, context-file policy, and resource reload before session creation.
 - `src/channels/contracts.ts`: a channel-independent conversation factory, message handler, and cleanup contract.
 - `src/channels/telegram/{settings,bot-api,channel}.ts`: Telegram input/output and lifecycle.
 - `src/telegram.ts`: simulated streaming conversation; the future Pi integration point is its `createConversation` callback.
@@ -156,7 +162,7 @@ Confirmed sequence: build and test the channel without a model first. The owner 
 - `test/telegram.test.mjs`: fourteen tests, alongside the four existing terminal tests.
 - `package.json`: `npm run telegram` and `npm run telegram:identify`.
 
-The earlier file table describes the target architecture. The Pi handler in `core/handler.ts` is implemented; the configurable session factory, `agents/ava/`, the terminal move, and Pi-backed persistence remain future owner work. The handler extraction passed type checking and source review; live terminal verification after extraction is still pending.
+The earlier table distinguishes current modules from target paths. The Pi handler, session factory, AVA configuration, and resource policy are implemented and wired to the terminal. Session-manager selection, chat persistence, the terminal move, and Telegram–Pi wiring remain future owner work. See `ARCHITECTURE.md` for the latest verification; local channel tests do not validate a live model conversation or Telegram–Pi integration.
 
 ## Deferred delivery recovery
 

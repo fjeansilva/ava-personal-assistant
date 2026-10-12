@@ -1,12 +1,21 @@
 import { runTerminal } from "./terminal.js";
-import { createAvaSession } from "./config/runtime.js"
+import { modelConfig } from "./agents/ava/config.js";
+import { createAvaResourceLoader } from "./agents/ava/resources.js";
+import { createSession } from "./core/session.js";
 import { createMessageHandler } from "./core/handler.js";
 
 try {
-  const avaSession = await createAvaSession();
+  const cwd = process.cwd();
+  const resourceLoader = await createAvaResourceLoader(cwd);
+
+  const avaSession = await createSession(modelConfig, {
+    cwd,
+    resourceLoader,
+  });
 
   try {
     console.log("Ava terminal - powered by Pi.\n");
+
     const handleMessage = createMessageHandler(avaSession);
     await runTerminal(handleMessage);
   } finally {

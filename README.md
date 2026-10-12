@@ -4,7 +4,7 @@ A personal assistant built with TypeScript and Pi as its harness.
 
 ## Current step: terminal conversation
 
-The terminal connects to one Pi agent session through `createMessageHandler(session)` in `src/core/handler.ts`, streams replies, and supports cancellation and cleanup. `src/terminal-preview.ts` creates the session and handler and disposes the session on exit. Tools are disabled for this first milestone.
+The terminal connects to one Pi agent session through `createMessageHandler(session)` in `src/core/handler.ts`, streams replies, and supports cancellation and cleanup. `src/terminal-preview.ts` imports `modelConfig` from `src/agents/ava/config.ts`, awaits the resource loader from `src/agents/ava/resources.ts`, and passes both to `createSession(modelConfig, { cwd, resourceLoader })` in `src/core/session.ts`. It creates the handler and disposes the session on exit. Tools are disabled for this first milestone.
 
 ## Setup
 
@@ -32,7 +32,7 @@ npm run terminal
 
 The command builds the project, loads `.env`, and starts a real model conversation. Type `/exit` to finish or press Ctrl+C to cancel and exit.
 
-AVA's persona is in `.pi/SYSTEM.md`, loaded by Pi for the trusted project. `AGENTS.md` contains guidelines for coding agents working on this repository.
+AVA's persona remains in `.pi/SYSTEM.md`, loaded by Pi for the trusted project. Her resource factory uses Pi's native `DefaultResourceLoader` with `noContextFiles: true`, so repository coding guidelines such as `AGENTS.md` are not automatically added to her context. It also omits `APPEND_SYSTEM.md` additions. Session history remains managed by Pi; skills and extension discovery retain their defaults.
 
 Each application run creates a new Pi session. Messages within that run share one session; resuming a previous session is not implemented yet.
 
@@ -57,7 +57,7 @@ Keep the process running and send a private text message to the bot. Only allowe
 
 Replies use temporary streaming drafts followed by a final message. Long output is split into plain-text messages. The preview stores no chat history across restarts. Automatic reconnection, delivery retries, and durable queues are deferred; polling failures stop the process and must be addressed before restarting. A bot with an existing webhook is rejected rather than reconfigured.
 
-The integration point is `createConversation` in `src/telegram.ts`. Replace that simulated factory with your Pi-backed implementation of `src/channels/contracts.ts`; channels receive a handler and cleanup function, not a Pi session. The extracted Pi handler is already used by the terminal. A configurable session factory and persistent chat mapping are the next steps before connecting it to Telegram.
+The integration point is `createConversation` in `src/telegram.ts`. Replace that simulated factory with your Pi-backed implementation of `src/channels/contracts.ts`; channels receive a handler and cleanup function, not a Pi session. The extracted Pi handler and model-configurable session factory are already used by the terminal. AVA's configuration and resource policy are also connected to the terminal. Persistent chat mapping and Telegram–Pi wiring remain for the owner.
 
 See [the Telegram plan](./docs/telegram-channel-plan.md) for decisions, implementation ownership, and remaining Pi work.
 
