@@ -26,18 +26,18 @@ This plan adds Telegram as a second conversation channel for AVA. It also shapes
 - `src/core/session.ts` exports `createSession(modelConfig, options)`. Both entry points supply AVA settings, `cwd`, and the loaded resource loader; Telegram also supplies its chat-specific `sessionManager`. The old `src/config/runtime.ts` has been removed; the core does not choose AVA's context policy.
 - The installed Pi SDK offers `SessionManager.inMemory()`, `create()`, and `continueRecent()`. `DefaultResourceLoader` offers `noContextFiles`, `noSkills`, `noExtensions`, `systemPrompt`, and `appendSystemPrompt`.
 - The Telegram channel uses the Bot API directly and remains independent of Pi. `src/telegram.ts` now composes real Pi conversations and selects history with `SessionManager.continueRecent(cwd, sessionDir)`, where the directory is derived from each chat ID.
-- On 2026-10-12, the owner tested the real Telegram bot and confirmed successful session resume after restarting. Fourteen Telegram tests and four terminal tests cover channel behavior through injected conversations; they do not exercise Pi history resume end to end. Thirteen voice tests now bring the repository total to 31.
+- On 2026-10-12, the owner tested the real Telegram bot and confirmed successful session resume after restarting. Fourteen Telegram tests and four terminal tests cover channel behavior through injected conversations; they do not exercise Pi history resume end to end. Thirteen voice delegation tests and five expression tool/client tests now bring the repository total to 36.
 - No Telegram library is installed.
 - Voice now uses `ws` to attach to Ava Orb's GPT-Live session and reuses `Conversation` with a Pi backend implemented by the owner. It sends incremental transcript batches into one Pi session per backend launch. This does not change Telegram behavior or share its history. See [the architecture](../ARCHITECTURE.md#voice-channel-gpt-live-with-a-pi-backend) for its current flow and limitations.
 
 ## Pi as a harness for future agents
 
-Pi owns the agent loop, model requests, context assembly, sessions, and tools. Each agent should only supply its persona, configuration, and (later) its tools.
+Pi owns the agent loop, model requests, context assembly, sessions, and tools. Each agent should only supply its persona, configuration, and its tools.
 
 Resource and configuration boundaries:
 
 1. **Context policy (implemented).** `src/agents/ava/resources.ts` sets `noContextFiles: true` in Pi's `DefaultResourceLoader` so coding guidelines such as `AGENTS.md` are not automatically added to AVA's context. The persona stays in `.pi/SYSTEM.md`; context-file discovery is separate from system-prompt discovery and session history. The empty append-system override is preserved. Other resource discovery keeps Pi's defaults. The loader is reloaded before session creation; no custom context manager is introduced.
-2. **Model settings and resource injection (implemented).** `createSession(modelConfig, options)` accepts validated model configuration and `Pick<CreateAgentSessionOptions, "cwd" | "resourceLoader" | "sessionManager">`. Both entry points choose AVA's settings and loader and pass the same `cwd` to loader and session. Telegram additionally selects its chat-specific manager. The core forwards native options to Pi without importing AVA modules.
+2. **Model settings and resource injection (implemented).** `createSession(modelConfig, options)` accepts validated model configuration and `Pick<CreateAgentSessionOptions, "cwd" | "resourceLoader" | "sessionManager" | "customTools" | "tools">`. Both entry points choose AVA's settings and loader and pass the same `cwd` to loader and session. Telegram additionally selects its chat-specific manager. The core forwards native options to Pi without importing AVA modules.
 
 Principle: **draw the boundaries now and build the framework later.** Extract a shared package once a second agent actually needs this code.
 
@@ -64,7 +64,7 @@ flowchart LR
 | --- | --- | --- |
 | Channels (`src/terminal.ts`, `src/channels/telegram/`) | Input/output only, connected through the `{ message, write, signal }` handler. The terminal folder move is deferred. | Shared |
 | Pi core (`src/core/session.ts`, `src/core/handler.ts`) | Implemented: `createSession(modelConfig, options)` with native resource-loader injection, and the prompt/subscribe/abort handler. Telegram supplies a chat-specific persistent manager; the terminal uses Pi's default. | Shared |
-| Agent definition (`src/agents/ava/`) | Implemented: `config.ts` validates model settings; `resources.ts` configures and reloads Pi's native loader. Tools come later. Her persona remains in `.pi/SYSTEM.md`. | Per agent |
+| Agent definition (`src/agents/ava/`) | Implemented: `config.ts` validates model settings; `resources.ts` configures and reloads Pi's native loader. Voice now injects `set_expression` through native Pi tool options; Telegram tools remain disabled. Her persona remains in `.pi/SYSTEM.md`. | Per agent |
 | Entry points (`src/terminal-preview.ts`, `src/telegram.ts`) | Combine one agent with one channel. | Per agent and channel |
 
 ## Channel boundaries and future channels

@@ -10,7 +10,7 @@ Telegram now uses the same Pi core and AVA configuration through its own applica
 
 Voice is the third Pi-backed channel: Ava Orb maintains the GPT-Live audio session, while `voice-preview.ts` attaches a backend connection and creates a separate Pi conversation. The owner implemented and tested this integration. The voice path now sends incremental transcript batches; its diagram below shows collection, queuing, and the Pi connection.
 
-AVA-specific configuration and resource policy now live in `src/agents/ava/config.ts` and `src/agents/ava/resources.ts`. The terminal supplies both to `createSession(modelConfig, { cwd, resourceLoader })` in `src/core/session.ts`. Telegram also supplies a chat-specific `sessionManager`. The core does not import AVA settings or choose her context policy. Tools remain disabled with `noTools: "all"`. Calendar tools, personal memory, and Pi Durable are future work.
+AVA-specific configuration and resource policy now live in `src/agents/ava/config.ts` and `src/agents/ava/resources.ts`. The terminal supplies both to `createSession(modelConfig, { cwd, resourceLoader })` in `src/core/session.ts`. Telegram also supplies a chat-specific `sessionManager`. The core does not import AVA settings or choose her context policy. The factory retains `noTools: "all"` as its default. Voice explicitly enables only `set_expression` when configured; terminal and Telegram have no enabled tools. Calendar tools, personal memory, and Pi Durable are future work.
 
 ## Current component diagram
 
@@ -72,6 +72,10 @@ flowchart LR
     Pi -->|"text_delta"| Handler
     Handler -->|"Text chunks"| Adapter
     Pi <--> History["Pi session history"]
+    Preview -->|"Register and select set_expression"| Tool["AVA expression tool"]
+    Pi -->|"Native tool execution"| Tool
+    Tool <-->|"Authenticated HTTP request / confirmation"| OrbServer["Orb server<br/>Session-scoped expression bridge"]
+    OrbServer <-->|"SSE command / HTTP acknowledgement"| Orb
     Adapter -->|"delegationId + complete text"| Client
     Client -->|"session.commentary.append"| Live
 ```
@@ -127,11 +131,38 @@ Closing the connection or receiving a socket error aborts the shared signal and 
 
 ### Voice session lifetime and validation
 
-The voice entry point uses Pi's default persistent manager and starts a fresh session per backend launch. It does not automatically resume a voice conversation or share Telegram/terminal history. It reuses AVA's `.pi/SYSTEM.md`, context-file policy, explicit model selection, and `noTools: "all"`. The Live voice model and the delegated Pi model are separate choices.
+The voice entry point uses Pi's default persistent manager and starts a fresh session per backend launch. It does not automatically resume a voice conversation or share Telegram/terminal history. It reuses AVA's `.pi/SYSTEM.md`, context-file policy, and explicit model selection. Its explicit tool list enables only `set_expression` when the local Orb bridge is configured. The Live voice model and the delegated Pi model are separate choices.
 
 Local tests cover both speakers, collection deadlines, disjoint queued batches, late fragments with old or equal timestamps, empty batches, failure behavior, and shutdown. They inject a fake socket and a local conversation; they do not call Pi or GPT-Live. The owner confirmed the earlier Pi-backed round trip. Incremental delivery is locally verified and still needs a live voice check.
 
 References: [Live transcript deltas](https://developers.openai.com/api/docs/guides/live-conversations#transcript-deltas), [Live delegation](https://developers.openai.com/api/docs/guides/live-delegation), and [server controls](https://developers.openai.com/api/docs/guides/voice-server-controls).
+
+### Voice expression tool
+
+`agents/ava/tools/set-expression.ts` uses Pi's `defineTool` and TypeBox schema, exported by `pi-ai`. It accepts nine Portuguese expression names and an optional integer duration (800–15000 ms, default 3000). It receives an injected application callback; the Pi core does not depend on Orb. `channels/voice/orb-client.ts` implements that callback with a local, authenticated HTTP request scoped to the active Live session.
+
+The native session factory forwards `customTools` and `tools`. In the installed SDK, an explicit `tools` list takes precedence over the `noTools: "all"` default. `voice-preview.ts` registers and selects only `set_expression` when `AVA_ORB_BRIDGE_TOKEN` exists. Without it, the voice session has no tools and prints a startup warning. The default URL is `http://127.0.0.1:3000`, configurable through `AVA_ORB_BRIDGE_URL`. Terminal and Telegram do not inherit voice capabilities.
+
+The matching Ava Orb implementation lives in the separate `ava-orb` repository. Its local server registers a random browser credential when it creates a Live session, forwards expression commands over Server-Sent Events, and holds each backend request until the correct browser acknowledges it. The shared bridge token stays in server environments; the browser gets only its session-specific credential. Pi's tool result contains no credentials.
+
+```mermaid
+sequenceDiagram
+    participant Pi as Pi AgentSession
+    participant Tool as set_expression
+    participant Server as Local Orb server
+    participant Browser as Orb browser
+    Pi->>Tool: expression + optional duration_ms
+    Tool->>Server: POST expression, Live session ID, bearer token
+    Server->>Browser: SSE command with request ID and expiry
+    Browser->>Browser: Validate and call orb.setExpression
+    Browser->>Server: POST acknowledgement with browser credential
+    Server-->>Tool: Confirm application for this request
+    Tool-->>Pi: Tool result: applied, expression, duration_ms
+```
+
+The browser ignores expired commands and keeps speech-driven expressions from overwriting an explicit expression during its requested duration. A newer explicit command can replace it. Disconnects reject pending calls, remove the browser session, and require a new voice call. Unattached sessions expire after 30 seconds; commands expire after 5 seconds, with a 6-second backend HTTP deadline. Aborting stops the wait but cannot undo an expression already applied. Neither side retries commands automatically; a lost acknowledgement is an unknown result, not a successful application.
+
+The bridge uses Node's HTTP server and browser `EventSource`, without an additional transport framework or changes to GPT-Live's event schema. It is local-only and is not a multi-user deployment design. Web search and local-time tools remain separate work.
 
 ## Model and session setup
 
@@ -149,7 +180,7 @@ flowchart LR
 
 `ModelConfig.thinkingLevel` reuses `NonNullable<CreateAgentSessionOptions["thinkingLevel"]>` from the installed SDK. This keeps the supported values aligned with Pi and makes the field required in the application contract. Runtime environment validation remains in AVA's `config.ts`.
 
-The second parameter uses `Pick<CreateAgentSessionOptions, "cwd" | "resourceLoader" | "sessionManager">`. It reuses the SDK's types, and the core forwards these options to Pi. Both AVA entry points supply an already-loaded resource loader. Telegram also selects its persistent manager; the terminal leaves manager creation to Pi's default. Without a supplied loader, Pi uses its default loader.
+The second parameter uses `Pick<CreateAgentSessionOptions, "cwd" | "resourceLoader" | "sessionManager" | "customTools" | "tools">`. It reuses the SDK's types, and the core forwards these options to Pi. All three AVA entry points supply an already-loaded resource loader. Voice also injects its tools and an explicit selection. Telegram also selects its persistent manager; the terminal leaves manager creation to Pi's default. Without a supplied loader, Pi uses its default loader.
 
 ## AVA configuration and context policy
 
@@ -165,7 +196,7 @@ The second parameter uses `Pick<CreateAgentSessionOptions, "cwd" | "resourceLoad
 | `APPEND_SYSTEM.md` | Keep `appendSystemPromptOverride: () => []`, so these additions are omitted. |
 | Skills and extensions | Leave Pi's normal discovery behavior unchanged. The context-file flag does not disable these resources. |
 | Session history | Keep Pi's session storage and context assembly. Disabling context files does not disable history or make other saved sessions automatically available. |
-| Tools | Keep `noTools: "all"` in the session factory for this milestone. |
+| Tools | Default to `noTools: "all"`; voice alone selects `set_expression` when the Orb bridge is configured. |
 
 ```mermaid
 flowchart LR
@@ -354,7 +385,7 @@ AVA's resource factory uses Pi's native `.pi/SYSTEM.md` discovery while excludin
 - Keep chat identity routing in application setup and persistence/context reconstruction in Pi's `SessionManager`. Use a directory per Telegram chat; no separate transcript or mapping database is needed for the current policy.
 - Let Pi own context assembly and history; do not duplicate them in the terminal.
 - Use Node's built-in readline and test tools. The voice attachment uses `ws`; no new framework is introduced.
-- Keep tools disabled for the first conversation milestone.
+- Default to no tools; enable voice expressions through a native Pi tool and a session-scoped Orb connection.
 
 ## Pi references
 
@@ -478,6 +509,10 @@ Further integration remains owner-led unless implementation is explicitly delega
 
 ## Latest verification
 
-On 2026-10-12, `npm run typecheck` and `npm test` passed: 31 local tests (four terminal, fourteen Telegram, and thirteen voice). The test command also compiles the project. Voice tests use the real adapter with an injected fake WebSocket, a local conversation, and controlled timers. No network or model requests are made, so they do not verify live GPT-Live delivery or Pi persistence end to end.
+On 2026-10-12, `npm run typecheck` and `npm test` passed: 36 local tests (four terminal, fourteen Telegram, thirteen voice delegation, and five expression tool/client). The test command also compiles the project. Voice tests use the real adapter with an injected fake WebSocket, a local conversation, and controlled timers. No network or model requests are made, so they do not verify live GPT-Live delivery or Pi persistence end to end.
 
 Earlier live checks were performed by the owner: Telegram session resume after restarting, the simulated voice round trip, and then Pi-backed voice responses confirmed in the supplied logs. The incremental transcript update has local coverage and awaits a live check. The owner's Pi integration was preserved; only the voice prompt wrapper and log wording changed to describe incremental input.
+
+The expression implementation additionally passed five tests in the Orb repository and an integration smoke test across both projects using real loopback HTTP/SSE, the Pi tool definition, and a rendering callback. These checks confirm command routing and acknowledgement, not browser pixels or model tool selection. No OpenAI API calls were made.
+
+On 2026-10-12, the owner also followed the `set_expression` voice test and confirmed that the integration worked in a live call. This manual result complements the local tests; it does not establish coverage of every expression or failure path.

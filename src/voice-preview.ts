@@ -6,6 +6,8 @@ import { modelConfig } from "./agents/ava/config.js";
 import { createAvaResourceLoader } from "./agents/ava/resources.js";
 import { createSession } from "./core/session.js";
 import { createMessageHandler } from "./core/handler.js";
+import { createOrbClient } from "./channels/voice/orb-client.js";
+import { createSetExpressionTool } from "./agents/ava/tools/set-expression.js";
 
 const liveSessionId = process.argv[2];
 const apiKey = process.env.OPENAI_API_KEY;
@@ -18,10 +20,21 @@ if (!liveSessionId || !apiKey) {
 
 const cwd = process.cwd();
 const resourceLoader = await createAvaResourceLoader(cwd);
+const bridgeToken = process.env.AVA_ORB_BRIDGE_TOKEN;
+const voiceTools = bridgeToken
+  ? [createSetExpressionTool(createOrbClient({
+      sessionId: liveSessionId,
+      token: bridgeToken,
+      baseUrl: process.env.AVA_ORB_BRIDGE_URL ?? "http://127.0.0.1:3000",
+    }).setExpression)]
+  : [];
+if (!bridgeToken) console.warn("Orb expressions disabled: AVA_ORB_BRIDGE_TOKEN is not configured.");
 
 const avaSession = await createSession(modelConfig, {
   cwd,
   resourceLoader,
+  customTools: voiceTools,
+  tools: voiceTools.map((tool) => tool.name),
 });
 
 const handlePiMessage = createMessageHandler(avaSession);
