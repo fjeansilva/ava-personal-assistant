@@ -1,6 +1,6 @@
 # Telegram channel plan
 
-Status: **Telegram connected to Pi; persistent per-chat session resume implemented and confirmed by the owner.** Branch: `feature/telegram-channel`.
+Status: **Telegram connected to Pi; persistent per-chat session resume implemented and confirmed by the owner.** The original implementation used `feature/telegram-channel`.
 
 This plan adds Telegram as a second conversation channel for AVA. It also shapes the code so Pi can later serve as the harness for other agents, without building a framework before a second agent exists.
 
@@ -26,8 +26,9 @@ This plan adds Telegram as a second conversation channel for AVA. It also shapes
 - `src/core/session.ts` exports `createSession(modelConfig, options)`. Both entry points supply AVA settings, `cwd`, and the loaded resource loader; Telegram also supplies its chat-specific `sessionManager`. The old `src/config/runtime.ts` has been removed; the core does not choose AVA's context policy.
 - The installed Pi SDK offers `SessionManager.inMemory()`, `create()`, and `continueRecent()`. `DefaultResourceLoader` offers `noContextFiles`, `noSkills`, `noExtensions`, `systemPrompt`, and `appendSystemPrompt`.
 - The Telegram channel uses the Bot API directly and remains independent of Pi. `src/telegram.ts` now composes real Pi conversations and selects history with `SessionManager.continueRecent(cwd, sessionDir)`, where the directory is derived from each chat ID.
-- On 2026-10-12, the owner tested the real Telegram bot and confirmed successful session resume after restarting. The eighteen local tests cover channel behavior through injected conversations; they do not exercise Pi history resume end to end.
+- On 2026-10-12, the owner tested the real Telegram bot and confirmed successful session resume after restarting. Fourteen Telegram tests and four terminal tests cover channel behavior through injected conversations; they do not exercise Pi history resume end to end. Eleven voice tests now bring the repository total to 29.
 - No Telegram library is installed.
+- Voice is now a separate prototype using `ws` to attach to Ava Orb's GPT-Live session. It reuses `Conversation` with a simulated backend and collects both transcript speakers around delegations. This does not change Telegram behavior or connect voice to Pi. See [the architecture](../ARCHITECTURE.md#voice-prototype-gpt-live-with-a-simulated-backend) for its current flow and limitations.
 
 ## Pi as a harness for future agents
 
@@ -40,14 +41,14 @@ Resource and configuration boundaries:
 
 Principle: **draw the boundaries now and build the framework later.** Extract a shared package once a second agent actually needs this code.
 
-## Target architecture
+## Architecture and remaining folder move
 
-Confirmed folder layout: separate `src/core/`, `src/channels/`, and `src/agents/ava/` now. Keep entry points in `src/terminal.ts` and `src/telegram.ts`. This is an internal module split; it does not introduce a framework or a shared package. The persona remains in `.pi/SYSTEM.md`.
+Confirmed folder layout: separate `src/core/`, `src/channels/`, and `src/agents/ava/`. Current entry points are `src/terminal-preview.ts` and `src/telegram.ts`; the terminal interface still lives in `src/terminal.ts`. Moving that interface into `src/channels/` and renaming its entry point remain planned. This is an internal module split; it does not introduce a framework or a shared package. The persona remains in `.pi/SYSTEM.md`.
 
 ```mermaid
 flowchart LR
     TG["Telegram Bot API"] -->|"getUpdates (long polling)"| Channel["channels/telegram<br/>(no Pi, no AVA)"]
-    Term["stdin / stdout"] --> TermChannel["channels/terminal<br/>(no Pi, no AVA)"]
+    Term["stdin / stdout"] --> TermChannel["terminal.ts<br/>(no Pi, no AVA)"]
     Channel -->|"handleMessage({ message, write, signal })"| Handler["core/handler<br/>(shared)"]
     TermChannel -->|"handleMessage({ message, write, signal })"| Handler
     Handler -->|"prompt / subscribe / abort"| Session["Pi AgentSession"]
@@ -61,14 +62,14 @@ flowchart LR
 
 | Layer | Contents | Shared or per agent |
 | --- | --- | --- |
-| Channels (`src/channels/terminal.ts`, `src/channels/telegram/`) | Input/output only, connected through the `{ message, write, signal }` handler. | Shared |
+| Channels (`src/terminal.ts`, `src/channels/telegram/`) | Input/output only, connected through the `{ message, write, signal }` handler. The terminal folder move is deferred. | Shared |
 | Pi core (`src/core/session.ts`, `src/core/handler.ts`) | Implemented: `createSession(modelConfig, options)` with native resource-loader injection, and the prompt/subscribe/abort handler. Telegram supplies a chat-specific persistent manager; the terminal uses Pi's default. | Shared |
 | Agent definition (`src/agents/ava/`) | Implemented: `config.ts` validates model settings; `resources.ts` configures and reloads Pi's native loader. Tools come later. Her persona remains in `.pi/SYSTEM.md`. | Per agent |
-| Entry points (`src/terminal.ts`, `src/telegram.ts`) | Combine one agent with one channel. | Per agent and channel |
+| Entry points (`src/terminal-preview.ts`, `src/telegram.ts`) | Combine one agent with one channel. | Per agent and channel |
 
 ## Channel boundaries and future channels
 
-Confirmed direction: terminal and Telegram are the current channels. WhatsApp and a web chat interface similar to ChatGPT are future possibilities, not part of this implementation.
+Terminal and Telegram are connected to Pi. Voice has since been added as a prototype with a simulated backend; Pi integration is still pending. WhatsApp and a web text-chat interface similar to ChatGPT are future possibilities, not part of the Telegram implementation.
 
 - Each channel handles its own incoming messages, commands, and outgoing responses.
 - The shared AVA conversation code uses Pi for prompting, context assembly, and session history. New channels should reuse this code rather than duplicate it.
@@ -80,6 +81,8 @@ Confirmed direction: terminal and Telegram are the current channels. WhatsApp an
 flowchart LR
     Terminal["Terminal (existing)"] --> Conversation["Shared AVA conversation code"]
     Telegram["Telegram (connected to Pi)"] --> Conversation
+    Voice["Voice (implemented prototype)"] --> Mock["Simulated Conversation"]
+    Voice -.->|"Future Pi integration"| Conversation
     WhatsApp["WhatsApp (future)"] -.-> Conversation
     Web["Web chat (future)"] -.-> Conversation
     Conversation --> Pi["Pi harness"]

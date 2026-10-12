@@ -2,9 +2,11 @@
 
 A personal assistant built with TypeScript and Pi as its harness.
 
-## Current step: terminal and Telegram conversations
+## Current step: Pi conversations and a voice prototype
 
 The terminal connects to one Pi agent session through `createMessageHandler(session)` in `src/core/handler.ts`, streams replies, and supports cancellation and cleanup. `src/terminal-preview.ts` imports `modelConfig` from `src/agents/ava/config.ts`, awaits the resource loader from `src/agents/ava/resources.ts`, and passes both to `createSession(modelConfig, { cwd, resourceLoader })` in `src/core/session.ts`. It creates the handler and disposes the session on exit. Telegram now uses the same core factories with a separate persistent session per chat, resumed after application restarts. The owner confirmed this behavior in a live Telegram test. Tools are disabled for this milestone.
+
+The voice prototype connects Ava Orb's GPT-Live conversation to a simulated backend through the same `Conversation` contract. It collects user and assistant transcripts around each delegation; Pi integration for voice is a future step.
 
 ## Setup
 
@@ -63,12 +65,35 @@ See [the Telegram plan](./docs/telegram-channel-plan.md) for decisions, implemen
 
 ## Development
 
+See the voice prototype below for the third channel under development. Terminal and Telegram use Pi; voice currently uses a simulated backend.
+
 ```sh
 npm run build
 npm run typecheck
 npm test
 ```
 
-The tests use local callbacks and make no model requests.
+The 29 tests cover terminal (four), Telegram (fourteen), and voice (eleven) behavior using local callbacks, a fake Telegram API, and a fake WebSocket. They make no network or model requests.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for module responsibilities, diagrams, the terminal callback contract, and the Pi connection. See [AGENTS.md](./AGENTS.md) for coding guidelines.
+
+## Voice prototype: transcripts and simulated delegation
+
+The Ava Orb application owns the WebRTC audio conversation with GPT-Live. `src/voice-preview.ts` attaches a backend WebSocket to that existing Live session and supplies a simulated `Conversation` through `createVoiceAdapter`. This entry point does not load Pi or use its model settings, tools, or session storage.
+
+Keep the Orb call open with client delegation enabled. From this repository, use the active Live session ID and an environment file containing `OPENAI_API_KEY` for the same OpenAI project:
+
+```sh
+npm run build
+node --env-file=/absolute/path/to/voice/.env dist/voice-preview.js "<LIVE_SESSION_ID>"
+```
+
+After attachment, transcript logs distinguish `[transcript:user]` from `[transcript:assistant]`, with timing and the exact text of each fragment. Ask Ava to test the adapter. The connector opens a collection window for the delegation and waits until either:
+
+- 800 ms pass without receiving another user transcript fragment;
+- 2 seconds pass since the window opened; or
+- another delegation arrives, which freezes the previous window and opens the next one.
+
+Assistant fragments are collected but do not extend the window. The frozen snapshot includes all fragments received so far, including ones with timestamps after the delegation's offset. Responses remain simulated, and the terminal prints the snapshot for inspection. Fragments arriving after a snapshot freezes remain available for the next delegation. Closing the connection discards the pending window and aborts active work.
+
+This window is a prototype heuristic, not an end-of-speech detector: gaps in transcript delivery do not prove silence, and a fragment can still arrive too late or belong to a new utterance. The transcript buffer lives only in memory for this connection. It is not Pi history or persistent voice memory. Local tests use a fake socket and controlled timers; they do not call GPT-Live.
