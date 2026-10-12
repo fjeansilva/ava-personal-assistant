@@ -1,8 +1,6 @@
 import {
     createAgentSession,
     ModelRuntime,
-    DefaultResourceLoader,
-    getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 
 import type {
@@ -18,7 +16,7 @@ export interface ModelConfig {
 
 export async function createSession(
     modelConfig: ModelConfig,
-    options: Pick<CreateAgentSessionOptions, "cwd" | "resourceLoader" | "sessionManager"> = {},
+    options: Pick<CreateAgentSessionOptions, "cwd" | "resourceLoader" | "sessionManager" | "customTools" | "tools"> = {},
 ): Promise<AgentSession> {
     const modelRuntime = await ModelRuntime.create();
 
