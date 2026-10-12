@@ -4,7 +4,7 @@ A personal assistant built with TypeScript and Pi as its harness.
 
 ## Current step: terminal conversation
 
-The terminal connects to one Pi agent session, streams replies, and supports cancellation and cleanup. Tools are disabled for this first milestone.
+The terminal connects to one Pi agent session through `createMessageHandler(session)` in `src/core/handler.ts`, streams replies, and supports cancellation and cleanup. `src/terminal-preview.ts` creates the session and handler and disposes the session on exit. Tools are disabled for this first milestone.
 
 ## Setup
 
@@ -57,7 +57,7 @@ Keep the process running and send a private text message to the bot. Only allowe
 
 Replies use temporary streaming drafts followed by a final message. Long output is split into plain-text messages. The preview stores no chat history across restarts. Automatic reconnection, delivery retries, and durable queues are deferred; polling failures stop the process and must be addressed before restarting. A bot with an existing webhook is rejected rather than reconfigured.
 
-The integration point is `createConversation` in `src/telegram.ts`. Replace that simulated factory with your Pi-backed implementation of `src/channels/contracts.ts`; channels receive a handler and cleanup function, not a Pi session. Existing terminal and Pi modules are unchanged.
+The integration point is `createConversation` in `src/telegram.ts`. Replace that simulated factory with your Pi-backed implementation of `src/channels/contracts.ts`; channels receive a handler and cleanup function, not a Pi session. The extracted Pi handler is already used by the terminal. A configurable session factory and persistent chat mapping are the next steps before connecting it to Telegram.
 
 See [the Telegram plan](./docs/telegram-channel-plan.md) for decisions, implementation ownership, and remaining Pi work.
 

@@ -20,7 +20,7 @@ This plan adds Telegram as a second conversation channel for AVA. It also shapes
 ## Current state
 
 - `src/terminal.ts` doesn't depend on Pi. It passes a handler `{ message, write, signal }`.
-- `src/terminal-preview.ts` connects that handler to one Pi session.
+- `src/core/handler.ts` exports `createMessageHandler(session)`, extracted by the owner. `src/terminal-preview.ts` creates it from one Pi session, passes it to the terminal, and retains session disposal.
 - `src/config/settings.ts` validates the `AVA_*` model variables when it is imported and exports a global `modelConfig`.
 - `src/config/runtime.ts` creates the session from that global config. Its `DefaultResourceLoader` reads files from `process.cwd()`, so it also loads this repository's `AGENTS.md` (the coding guidelines) as AVA's context.
 - The installed Pi SDK offers `SessionManager.inMemory()`, `create()`, and `continueRecent()`. `DefaultResourceLoader` offers `noContextFiles`, `noSkills`, `noExtensions`, `systemPrompt`, and `appendSystemPrompt`.
@@ -47,7 +47,7 @@ Confirmed folder layout: separate `src/core/`, `src/channels/`, and `src/agents/
 flowchart LR
     TG["Telegram Bot API"] -->|"getUpdates (long polling)"| Channel["channels/telegram<br/>(no Pi, no AVA)"]
     Term["stdin / stdout"] --> TermChannel["channels/terminal<br/>(no Pi, no AVA)"]
-    Channel -->|"handleMessage({ message, write, signal })"| Handler["core/pi-handler<br/>(shared)"]
+    Channel -->|"handleMessage({ message, write, signal })"| Handler["core/handler<br/>(shared)"]
     TermChannel -->|"handleMessage({ message, write, signal })"| Handler
     Handler -->|"prompt / subscribe / abort"| Session["Pi AgentSession"]
     Agent["agents/ava<br/>(config, context policy)"] -->|"createAgentSession(config)"| Session
@@ -57,7 +57,7 @@ flowchart LR
 | Layer | Contents | Shared or per agent |
 | --- | --- | --- |
 | Channels (`src/channels/terminal.ts`, `src/channels/telegram/`) | Input/output only, connected through the `{ message, write, signal }` handler. | Shared |
-| Pi core (`src/core/session.ts`, `src/core/pi-handler.ts`) | `createAgentSession(config)` with the model, thinking level, and resources passed in, plus the shared prompt/subscribe/abort handler. | Shared |
+| Pi core (`src/core/session.ts`, `src/core/handler.ts`) | `createAgentSession(config)` with the model, thinking level, and resources passed in, plus the shared prompt/subscribe/abort handler. | Shared |
 | Agent definition (`src/agents/ava/`) | AVA's config: env prefix, context policy, and later her tools. Her persona remains in `.pi/SYSTEM.md`. | Per agent |
 | Entry points (`src/terminal.ts`, `src/telegram.ts`) | Combine one agent with one channel. | Per agent and channel |
 
@@ -113,7 +113,7 @@ These are validated in a separate settings module, so the terminal never needs a
 
 | File | Change |
 | --- | --- |
-| `src/core/pi-handler.ts` | **New.** Moves the handler code out of `terminal-preview.ts` as `createPiMessageHandler(session)`. |
+| `src/core/handler.ts` | **Implemented by the owner.** Exports `createMessageHandler(session)`; the terminal uses it. |
 | `src/core/session.ts` | **New** (from `config/runtime.ts`). `createAgentSession(config)` takes the model and resources as parameters. |
 | `src/agents/ava/` | **New.** AVA's configuration and context policy. Keep the persona in `.pi/SYSTEM.md`. |
 | `src/channels/terminal.ts` | Moved from `src/terminal.ts`. Behavior doesn't change. |
@@ -141,13 +141,14 @@ Confirmed sequence: build and test the channel without a model first. The owner 
 1. **Owner — completed:** create the Telegram bot and configure its token and allowed user ID locally.
 2. **Coding assistant — completed:** add the channel contract, settings, direct Bot API client, per-chat queue, streaming previews, cancellation, cleanup, and simulated reply entry point.
 3. **Coding assistant — completed:** add the local identification helper, run type checking and the eighteen local tests. The owner confirmed the live simulated response arrived in Telegram.
-4. **Owner — next:** extract the Pi handler, create the configurable session factory, and define AVA's configuration. Apply the agreed context policy while keeping `.pi/SYSTEM.md` in place.
+4. **Owner — handler extraction completed:** `src/core/handler.ts` exports `createMessageHandler(session)` and is connected to the terminal. **Next:** create the configurable session factory and define AVA's configuration. Apply the agreed context policy while keeping `.pi/SYSTEM.md` in place.
 5. **Owner:** add chat-to-Pi-session persistence and resume behavior, then replace the simulated conversation factory with the Pi-backed factory.
-6. **Owner:** complete the terminal folder move and entry-point refactor when ready. The existing terminal and Pi files remain unchanged in this first implementation.
+6. **Owner:** complete the terminal folder move and entry-point refactor when ready. The terminal input module is still in its original location; its entry point now uses the extracted handler.
 7. Verify real model behavior after the owner connects Pi, and update the diagrams and setup instructions as each step is completed.
 
 ### Implemented files
 
+- `src/core/handler.ts`: the extracted Pi message handler, connected through `src/terminal-preview.ts`.
 - `src/channels/contracts.ts`: a channel-independent conversation factory, message handler, and cleanup contract.
 - `src/channels/telegram/{settings,bot-api,channel}.ts`: Telegram input/output and lifecycle.
 - `src/telegram.ts`: simulated streaming conversation; the future Pi integration point is its `createConversation` callback.
@@ -155,7 +156,7 @@ Confirmed sequence: build and test the channel without a model first. The owner 
 - `test/telegram.test.mjs`: fourteen tests, alongside the four existing terminal tests.
 - `package.json`: `npm run telegram` and `npm run telegram:identify`.
 
-The earlier file table describes the target architecture; `core/`, `agents/ava/`, the terminal move, and Pi-backed persistence are still future owner work.
+The earlier file table describes the target architecture. The Pi handler in `core/handler.ts` is implemented; the configurable session factory, `agents/ava/`, the terminal move, and Pi-backed persistence remain future owner work. The handler extraction passed type checking and source review; live terminal verification after extraction is still pending.
 
 ## Deferred delivery recovery
 
