@@ -61,8 +61,8 @@ export function connectLiveSession({
     discardCollection();
     if (controller.signal.aborted) return;
 
-    // Freeze before queuing so a slow earlier request cannot change this context.
-    const message = transcript.snapshot(current.offsetMs);
+    // Reserve new fragments before queuing; each request gets a separate batch.
+    const message = transcript.takeSnapshot(current.offsetMs);
     console.log("[collection] frozen", current.delegationId, reason);
     queue = queue
       .then(() => respond(current.delegationId, message))

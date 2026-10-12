@@ -6,7 +6,7 @@ These instructions apply to agents working on this repository's code and documen
 
 AVA is a personal assistant built with TypeScript and the Pi SDK. The current milestone includes terminal and Telegram conversations with an explicitly selected model, streamed replies, cancellation, and session cleanup. Telegram resumes a separate persistent Pi session per authorized private chat; the owner confirmed live resume after restarting. Tools are disabled. Calendar integration, long-term personal memory, and Pi Durable are future work.
 
-A third channel is under development: `src/voice-preview.ts` attaches to an existing GPT-Live session used by Ava Orb, collects transcripts, and returns simulated backend results. It does not create a Pi session. The owner confirmed the earlier live simulated round trip; the latest transcript collection changes have local test coverage only.
+Voice is the third Pi-backed channel: `src/voice-preview.ts` attaches to an existing GPT-Live session used by Ava Orb, loads AVA settings/resources, and creates one Pi session per backend launch. The owner supplied logs confirming the live Pi-backed round trip. The latest incremental transcript changes have local test coverage only.
 
 Use Pi for the agent loop, model requests, context assembly, and session persistence. Keep application code focused on configuration, lifecycle, and the user interface.
 
@@ -39,8 +39,8 @@ The Telegram entry point is `src/telegram.ts`; its `createConversation` callback
 | `src/telegram.ts` | Compose AVA conversations using `SessionManager.continueRecent` in a chat-specific directory, return the Pi handler and session disposal, and retain the existing channel contract. |
 | `src/channels/voice/adapter.ts` | Adapt an injected `Conversation` to `{ delegationId, text }` results; accumulate text and honor cancellation. |
 | `src/channels/voice/live-client.ts` | Attach a backend WebSocket, validate events, log both transcript speakers, collect fragments within a bounded window, serialize delegations, and return results. |
-| `src/channels/voice/transcript.ts` | Keep temporary fragments per connection and serialize frozen transcript snapshots; not persistent Pi history. |
-| `src/voice-preview.ts` | Supply the simulated conversation, load the existing Live session ID and API key, and own connection cleanup. |
+| `src/channels/voice/transcript.ts` | Keep pending fragments per connection; `takeSnapshot` drains them into a frozen incremental batch. Pi owns persistent history. |
+| `src/voice-preview.ts` | Supply a Pi-backed AVA conversation using the shared factories, describe incremental transcript input, and own connection/session cleanup. |
 | `.pi/SYSTEM.md` | Define AVA's runtime persona through Pi's project system-prompt convention. |
 | `test/terminal.test.mjs` | Test terminal behavior with local callbacks and Node's built-in test runner. |
 | `test/voice.test.mjs` | Test transcript capture, collection deadlines, immutable snapshots, queue ordering, and cleanup with a fake socket and controlled timers. |
@@ -55,21 +55,22 @@ The Telegram entry point is `src/telegram.ts`; its `createConversation` callback
 - Validate environment values at the configuration boundary. Do not use unchecked type assertions to hide invalid input.
 - Use the installed Pi SDK declarations and examples as the authority for the version in this project. Do not assume APIs from a different release.
 
-## Voice prototype boundaries
+## Voice channel boundaries
 
-- Keep voice independent of Pi through the existing `Conversation` contract. Preserve the simulated backend until Pi integration is requested.
+- Keep channel modules independent of Pi through the existing `Conversation` contract. The owner has connected `voice-preview.ts` to the real AVA settings, resources, session factory, and message handler; preserve that integration.
 - User transcripts use `session.input_transcript.delta`; assistant transcripts use `session.output_transcript.delta`. Preserve fragment text and spaces exactly.
 - Collection closes after 800 ms without a new user fragment, at 2 seconds from delegation, or when the next delegation arrives. Only user fragments reset the idle timer; never extend the maximum deadline.
-- Freeze snapshots before queuing. The delegation offset is metadata, not a timestamp cutoff. Fragments arriving after freezing remain for the next request; they do not steer an active request.
+- Reserve incremental batches before queuing with `takeSnapshot`; this drains pending fragments so queued delegations cannot reuse them. Membership follows arrival order, including late fragments with older or equal audio timestamps. The delegation offset is metadata, not a cutoff. Fragments after freezing remain for the next request; they do not steer an active request.
 - Treat the collection window as a prototype heuristic, not proof of a completed spoken turn. Do not infer silence from event-delivery gaps.
-- Keep the buffer in memory for the connection. Let Pi own persistent history when that integration is added; voice history resume, retention, and task updates are not implemented.
+- Keep only pending fragments in the connection buffer. Earlier batches and backend replies are already in Pi history; do not resend the full transcript. Empty batches return a clarification without prompting Pi. Automatic voice history resume and task updates are not implemented.
+- Do not automatically requeue reserved batches after a handler or delivery failure: Pi may already have accepted their prompt. Durable recovery and exactly-once processing are not implemented.
 - Clear collection timers on close/error and pass the abort signal through the adapter. Spoken cancellation and per-delegation cancellation are not implemented.
 - Inject the socket factory for tests. Do not require live API credentials or a model call for local validation.
 
 ## Pi integration boundaries
 
 - Select the model explicitly by provider and model ID. Fail clearly if the configuration is missing or the model cannot be resolved.
-- Create one session per terminal conversation and one separate session per Telegram chat. Reuse the same live object for prompting and subscriptions.
+- Create one session per terminal conversation, one separate session per Telegram chat, and one voice session per backend launch. Reuse the same live object for prompting and subscriptions. Voice currently creates a fresh persistent session rather than resuming a previous one.
 - Telegram selects history through ``SessionManager.continueRecent(cwd, join(getAgentDir(), "sessions", `ava-telegram-${conversationId}`))``. Keep discovery scoped to that chat and use the same `cwd` across restarts; do not resume the most recent session globally. Pi owns persistence and context reconstruction.
 - Pi history resume does not restore the channel's pending queue or polling offset. Do not claim durable delivery from conversation persistence alone.
 - Subscribe before prompting, forward text-delta events to `write`, and await each prompt before processing another message.
@@ -97,7 +98,7 @@ npm run typecheck
 npm test
 ```
 
-`npm test` builds the project and runs 29 tests: four terminal, fourteen Telegram, and eleven voice tests without network or model calls. `npm run build` builds separately. `npm run terminal` and `npm run telegram` start real Pi-backed applications and require model configuration and provider credentials. Telegram also requires bot settings. `voice-preview.ts` requires an active Live session ID and `OPENAI_API_KEY`; its backend response is still simulated. The owner has confirmed live Telegram resume; current automated channel tests do not cover Pi restart recovery end to end or live GPT-Live transcript delivery.
+`npm test` builds the project and runs 31 tests: four terminal, fourteen Telegram, and thirteen voice tests without network or model calls. `npm run build` builds separately. `npm run terminal` and `npm run telegram` start real Pi-backed applications and require model configuration and provider credentials. Telegram also requires bot settings. `voice-preview.ts` requires an active Live session ID, `OPENAI_API_KEY`, and the AVA model settings and provider credentials; it makes real Pi requests. Voice tests inject a local conversation instead. The owner has confirmed live Telegram resume; current automated channel tests do not cover Pi restart recovery end to end or live GPT-Live transcript delivery.
 
 Test observable behavior, especially streaming, message ordering, error recovery, cancellation, and cleanup. For documentation-only changes, check Markdown structure, paths, links, and consistency with the current implementation.
 

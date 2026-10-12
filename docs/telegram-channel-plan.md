@@ -26,9 +26,9 @@ This plan adds Telegram as a second conversation channel for AVA. It also shapes
 - `src/core/session.ts` exports `createSession(modelConfig, options)`. Both entry points supply AVA settings, `cwd`, and the loaded resource loader; Telegram also supplies its chat-specific `sessionManager`. The old `src/config/runtime.ts` has been removed; the core does not choose AVA's context policy.
 - The installed Pi SDK offers `SessionManager.inMemory()`, `create()`, and `continueRecent()`. `DefaultResourceLoader` offers `noContextFiles`, `noSkills`, `noExtensions`, `systemPrompt`, and `appendSystemPrompt`.
 - The Telegram channel uses the Bot API directly and remains independent of Pi. `src/telegram.ts` now composes real Pi conversations and selects history with `SessionManager.continueRecent(cwd, sessionDir)`, where the directory is derived from each chat ID.
-- On 2026-10-12, the owner tested the real Telegram bot and confirmed successful session resume after restarting. Fourteen Telegram tests and four terminal tests cover channel behavior through injected conversations; they do not exercise Pi history resume end to end. Eleven voice tests now bring the repository total to 29.
+- On 2026-10-12, the owner tested the real Telegram bot and confirmed successful session resume after restarting. Fourteen Telegram tests and four terminal tests cover channel behavior through injected conversations; they do not exercise Pi history resume end to end. Thirteen voice tests now bring the repository total to 31.
 - No Telegram library is installed.
-- Voice is now a separate prototype using `ws` to attach to Ava Orb's GPT-Live session. It reuses `Conversation` with a simulated backend and collects both transcript speakers around delegations. This does not change Telegram behavior or connect voice to Pi. See [the architecture](../ARCHITECTURE.md#voice-prototype-gpt-live-with-a-simulated-backend) for its current flow and limitations.
+- Voice now uses `ws` to attach to Ava Orb's GPT-Live session and reuses `Conversation` with a Pi backend implemented by the owner. It sends incremental transcript batches into one Pi session per backend launch. This does not change Telegram behavior or share its history. See [the architecture](../ARCHITECTURE.md#voice-channel-gpt-live-with-a-pi-backend) for its current flow and limitations.
 
 ## Pi as a harness for future agents
 
@@ -69,7 +69,7 @@ flowchart LR
 
 ## Channel boundaries and future channels
 
-Terminal and Telegram are connected to Pi. Voice has since been added as a prototype with a simulated backend; Pi integration is still pending. WhatsApp and a web text-chat interface similar to ChatGPT are future possibilities, not part of the Telegram implementation.
+Terminal, Telegram, and voice are connected to Pi through separate application entry points. Voice integration was added after the Telegram milestone and now sends incremental transcript batches; its session is separate from Telegram. WhatsApp and a web text-chat interface similar to ChatGPT are future possibilities, not part of the Telegram implementation.
 
 - Each channel handles its own incoming messages, commands, and outgoing responses.
 - The shared AVA conversation code uses Pi for prompting, context assembly, and session history. New channels should reuse this code rather than duplicate it.
@@ -81,8 +81,7 @@ Terminal and Telegram are connected to Pi. Voice has since been added as a proto
 flowchart LR
     Terminal["Terminal (existing)"] --> Conversation["Shared AVA conversation code"]
     Telegram["Telegram (connected to Pi)"] --> Conversation
-    Voice["Voice (implemented prototype)"] --> Mock["Simulated Conversation"]
-    Voice -.->|"Future Pi integration"| Conversation
+    Voice["Voice (connected to Pi)<br/>Incremental transcript batches"] --> Conversation
     WhatsApp["WhatsApp (future)"] -.-> Conversation
     Web["Web chat (future)"] -.-> Conversation
     Conversation --> Pi["Pi harness"]

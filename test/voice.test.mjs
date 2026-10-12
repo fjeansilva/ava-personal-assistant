@@ -104,12 +104,12 @@ test("a new delegation freezes the previous one and each result keeps its identi
   assert.deepEqual(texts(f.requests[0]), ["First request"]);
   await f.tick(800);
   assert.deepEqual(f.socket.sent.map(({ delegation_id }) => delegation_id), ["first", "second"]);
-  assert.deepEqual(texts(f.requests[1]), ["First request", " Second request"]);
+  assert.deepEqual(texts(f.requests[1]), [" Second request"]);
   await f.tick(5_000);
   assert.equal(f.requests.length, 2);
 });
 
-test("freezes queued snapshots and retains later fragments for the next delegation", async (t) => {
+test("queued batches stay disjoint and later fragments belong to the next delegation", async (t) => {
   const gate = Promise.withResolvers();
   let calls = 0;
   const f = fixture(t, async ({ write }) => {
@@ -123,15 +123,50 @@ test("freezes queued snapshots and retains later fragments for the next delegati
   f.fragment(" Collected suffix", 200, 300);
   await f.tick(800);
   f.fragment(" Too late for second", 300, 400);
+  f.delegate("third", 400);
+  await f.tick(800);
+  f.fragment(" Too late for third", 400, 500);
   assert.equal(f.requests.length, 1);
   gate.resolve();
   await setImmediate();
-  assert.equal(f.requests.length, 2);
-  assert.deepEqual(texts(f.requests[1]), ["Initial context", " Collected suffix"]);
-  assert.equal(f.socket.sent.length, 2);
-  f.delegate("third", 400);
+  assert.equal(f.requests.length, 3);
+  assert.deepEqual(texts(f.requests[0]), ["Initial context"]);
+  assert.deepEqual(texts(f.requests[1]), [" Collected suffix"]);
+  assert.deepEqual(texts(f.requests[2]), [" Too late for second"]);
+  assert.deepEqual(f.socket.sent.map(({ delegation_id }) => delegation_id), ["first", "second", "third"]);
+  f.delegate("fourth", 500);
   await f.tick(800);
-  assert.deepEqual(texts(f.requests[2]), ["Initial context", " Collected suffix", " Too late for second"]);
+  assert.deepEqual(texts(f.requests[3]), [" Too late for third"]);
+});
+
+test("late fragments with older or identical timestamps enter the next batch", async (t) => {
+  const f = fixture(t);
+  f.fragment("Initial request", 100, 200);
+  f.delegate("first", 200);
+  await f.tick(800);
+
+  // Arrival order determines batch membership, not an audio-time watermark.
+  f.fragment(" Earlier audio arriving late", 0, 50);
+  f.fragment(" Same interval arriving late", 100, 200, "assistant");
+  f.delegate("second", 200);
+  await f.tick(800);
+  assert.deepEqual(texts(f.requests[1]), [" Earlier audio arriving late", " Same interval arriving late"]);
+  assert.deepEqual(texts(f.requests[0]), ["Initial request"]);
+});
+
+test("a delegation without new fragments receives an empty batch instead of old context", async (t) => {
+  const f = fixture(t);
+  f.fragment("Use once", 0, 100);
+  f.delegate("first");
+  await f.tick(800);
+  f.delegate("empty", 200);
+  await f.tick(800);
+  assert.equal(f.requests[1].message, "");
+
+  f.fragment(" New request", 200, 300);
+  f.delegate("third", 300);
+  await f.tick(800);
+  assert.deepEqual(texts(f.requests[2]), [" New request"]);
 });
 
 for (const cause of ["local close", "remote close", "socket error"]) {
@@ -192,29 +227,36 @@ test("invalid events cannot extend collection or enter the transcript", async (t
   assert.deepEqual(texts(f.requests[0]), ["Valid"]);
 });
 
-test("a failed handler does not block the next collected request", async (t) => {
+test("a failed handler does not replay its batch or block the next request", async (t) => {
   let calls = 0;
   const f = fixture(t, async ({ write }) => {
     if (++calls === 1) throw new Error("Simulated failure");
     write("Recovered.");
   });
+  f.fragment("First attempt", 0, 100);
   f.delegate("fails");
+  await f.tick(800);
+  f.fragment("Next request", 100, 200);
   f.delegate("recovers");
   await f.tick(800);
   assert.equal(f.requests.length, 2);
   assert.equal(f.socket.sent.length, 1);
   assert.equal(f.socket.sent[0].delegation_id, "recovers");
+  assert.deepEqual(texts(f.requests[0]), ["First attempt"]);
+  assert.deepEqual(texts(f.requests[1]), ["Next request"]);
 });
 
-test("transcript snapshots sort received fragments and remain unchanged after appends", () => {
+test("taking a snapshot drains pending fragments without changing previous batches", () => {
   const buffer = createTranscriptBuffer();
-  assert.equal(buffer.snapshot(100), "");
+  assert.equal(buffer.takeSnapshot(100), "");
   const fragment = { speaker: "user", text: " suffix", startMs: 100, endMs: 200 };
   buffer.append(fragment);
   fragment.text = "Changed outside the buffer";
   buffer.append({ speaker: "assistant", text: "Hello", startMs: 0, endMs: 50 });
-  const snapshot = buffer.snapshot(100);
+  const snapshot = buffer.takeSnapshot(100);
+  assert.equal(buffer.takeSnapshot(100), "");
   buffer.append({ speaker: "user", text: "Later", startMs: 200, endMs: 300 });
   assert.deepEqual(JSON.parse(snapshot).fragments.map(({ text }) => text), ["Hello", " suffix"]);
-  assert.equal(JSON.parse(buffer.snapshot(300)).fragments.length, 3);
+  assert.deepEqual(JSON.parse(buffer.takeSnapshot(300)).fragments.map(({ text }) => text), ["Later"]);
+  assert.equal(buffer.takeSnapshot(300), "");
 });

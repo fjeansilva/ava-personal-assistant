@@ -13,10 +13,11 @@ export function createTranscriptBuffer() {
       fragments.push({ ...fragment });
     },
 
-    snapshot(offsetMs: number): string {
+    takeSnapshot(offsetMs: number): string {
       // The offset identifies the delegation, not the end of its spoken request.
-      // Include everything received before the collection window closes.
-      const selected = [...fragments].sort(
+      // Reserve all pending arrivals for this batch, including late fragments.
+      // Queued requests must not take the same fragments again.
+      const selected = fragments.splice(0).sort(
         (a, b) => a.startMs - b.startMs || a.endMs - b.endMs,
       );
       if (selected.length === 0) return "";
