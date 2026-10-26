@@ -4,7 +4,7 @@ A personal assistant built with TypeScript and Pi as its harness.
 
 ## Current step: Pi conversations and a voice prototype
 
-The terminal connects to one Pi agent session through `createMessageHandler(session)` in `src/core/handler.ts`, streams replies, and supports cancellation and cleanup. `src/terminal-preview.ts` imports `modelConfig` from `src/agents/ava/config.ts`, awaits the resource loader from `src/agents/ava/resources.ts`, and passes both to `createSession(modelConfig, { cwd, resourceLoader })` in `src/core/session.ts`. It creates the handler and disposes the session on exit. Telegram now uses the same core factories with a separate persistent session per chat, resumed after application restarts. The owner confirmed this behavior in a live Telegram test. Terminal and Telegram tools remain disabled; voice has an optional facial-expression tool.
+The terminal connects to one Pi agent session through `createMessageHandler(session)` in `src/core/handler.ts`, streams replies, and supports cancellation and cleanup. `src/terminal-preview.ts` imports `modelConfig` from `src/agents/ava/config.ts`, awaits the resource loader from `src/agents/ava/resources.ts`, and passes both to `createSession(modelConfig, { cwd, resourceLoader })` in `src/core/session.ts`. It creates the handler and disposes the session on exit. Telegram now uses the same core factories with a separate persistent session per chat, resumed after application restarts. The owner confirmed this behavior in a live Telegram test. Terminal and Telegram tools remain disabled; voice has time and web-search tools plus an optional facial-expression tool.
 
 The voice channel connects Ava Orb's GPT-Live conversation to Pi through the same `Conversation` contract. It sends only newly collected user and assistant transcript fragments for each delegation, reusing one Pi session during the backend process. The owner confirmed the Pi-backed voice round trip before this incremental update.
 
@@ -73,13 +73,13 @@ npm run typecheck
 npm test
 ```
 
-The 36 tests cover terminal (four), Telegram (fourteen), voice delegation (thirteen), and the expression tool/client (five) using local callbacks and fake transports. They make no network or model requests.
+The 56 tests cover terminal (four), Telegram (fourteen), voice delegation (thirteen), voice connection failures (nine), voice session storage (three), expression tool/client (five), and time/search tools (eight). Storage tests use Pi's real `SessionManager` with temporary files. Connection tests include a real WebSocket against a loopback HTTP server; other checks use local callbacks and fake transports. They make no OpenAI or model requests.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for module responsibilities, diagrams, the terminal callback contract, and the Pi connection. See [AGENTS.md](./AGENTS.md) for coding guidelines.
 
 ## Voice channel: Pi-backed incremental delegation
 
-The Ava Orb application owns the WebRTC audio conversation with GPT-Live. `src/voice-preview.ts` attaches a backend WebSocket to that existing Live session and supplies a Pi-backed `Conversation` through `createVoiceAdapter`. The entry point loads AVA's model settings and resource policy, creates one Pi session, and reuses `createMessageHandler` for every delegation. Voice enables only `set_expression` when the Orb bridge is configured. Terminal and Telegram still have no tools enabled.
+The Ava Orb application owns the WebRTC audio conversation with GPT-Live. `src/voice-preview.ts` attaches a backend WebSocket to that existing Live session and supplies a Pi-backed `Conversation` through `createVoiceAdapter`. The entry point loads AVA's model settings and resource policy, creates one Pi session, and reuses `createMessageHandler` for every delegation. Voice enables `get_local_time` and `web_search`, plus `set_expression` when the Orb bridge is configured. Terminal and Telegram still have no tools enabled.
 
 Keep the Orb call open with client delegation enabled. Its instructions should describe a real Pi backend rather than the earlier simulated connection test. From this repository, load the AVA model settings and the environment file containing `OPENAI_API_KEY` for the same OpenAI project as the Live session:
 
@@ -89,6 +89,10 @@ node --env-file=.env --env-file=/absolute/path/to/voice/.env dist/voice-preview.
 ```
 
 Provider credentials for Pi still use its authentication configuration. `OPENAI_API_KEY` authenticates the Live connection; `AVA_MODEL_PROVIDER` and `AVA_MODEL_ID` select the delegated Pi model.
+
+If the initial WebSocket attachment returns HTTP 429, 502, 503, or 504, the client retries after 1, 2, and 4 seconds (four attempts total). It respects a longer `Retry-After` up to 30 seconds; a longer requested wait ends the run so you can retry later. Each handshake has a 10-second timeout. Authentication and other HTTP errors stop immediately. The entry point prints an actionable error and exits unsuccessfully if attachment fails, while disposing the Pi session; Ctrl+C cancels pending retries.
+
+Keep the Orb call open and use its current Live session ID. A 503 is a failure of the remote attachment request; it does not indicate a Pi JSONL error. Start a new call and use its new ID if the previous call ended. If 503 persists for an active call, retry later. Established connections are never automatically reattached and delegations are never replayed: missed transcripts cannot be recovered by this retry policy.
 
 After attachment, transcript logs distinguish `[transcript:user]` from `[transcript:assistant]`, with timing and the exact text of each fragment. Ask Ava to delegate a task to the backend. The connector opens a collection window and waits until either:
 
@@ -102,11 +106,15 @@ The terminal prints `Transcript batch received:` for inspection. Previous batche
 
 The collection window remains a heuristic, not an end-of-speech detector. Gaps in transcript delivery do not prove silence; fragments after freezing wait for the next delegation, and a new utterance inside the window can also be included. The pending buffer and queue are in memory. Batches are not automatically replayed after a handler or delivery failure, since Pi may already have accepted them. This does not provide durable delivery or recovery across restarts.
 
-Each backend launch creates a fresh persistent Pi session; automatic voice session resume is not configured. Shutdown clears collection timers, aborts active work, and disposes the Pi session. Local tests use a fake socket and controlled timers, with no model or network calls. The incremental behavior still needs a live voice check.
+Each backend launch explicitly creates a fresh persistent Pi session through `createVoiceSessionManager` in `src/agents/ava/voice-session.ts`. Files are grouped by Live call under ``join(getAgentDir(), "sessions", `ava-voice-${liveSessionId}`)`` (normally `~/.pi/agent/sessions/ava-voice-<LIVE_SESSION_ID>/`). The terminal prints `Voice Pi session:` and `Session file:` at startup, and Pi stores the display name `Ava voice: <LIVE_SESSION_ID>`.
+
+Pi creates the JSONL file when the first user message is recorded, not merely when the backend attaches. In this integration, that means the first non-empty delegation accepted by Pi. Opening a call, receiving transcript fragments without delegation, or receiving an empty delegation does not create a conversation file. The JSONL contains delegated transcript batches, Pi replies, and tool calls/results; it is not a complete archive of everything spoken to GPT-Live. Older voice files remain in Pi's default project directory alongside terminal files; they are not migrated or deleted.
+
+Automatic voice session resume is not configured: restarting the backend creates another file even for the same Live ID. Shutdown clears collection timers, aborts active work, and disposes the Pi session. Local tests use a fake socket and controlled timers, with no model or network calls. The incremental behavior still needs a live voice check.
 
 ### Facial expression tool
 
-`src/agents/ava/tools/set-expression.ts` defines a native Pi tool. The voice entry point injects the local Orb client and selects the tool explicitly through `customTools` and `tools`. The session factory retains `noTools: "all"` as its default; the installed SDK gives an explicit tool selection precedence. No built-in coding tools are enabled.
+`src/agents/ava/tools/set-expression.ts` defines a native Pi tool. The voice entry point injects the local Orb client and selects this tool alongside time and web search through `customTools` and `tools`. The session factory retains `noTools: "all"` as its default; the installed SDK gives an explicit tool selection precedence. No built-in coding tools are enabled.
 
 Use the matching `feat/orb-set-expression` implementation in the Ava Orb repository. Put a random, private `AVA_ORB_BRIDGE_TOKEN` in `ava-orb/voice/.env`, and load that same file in both processes. A token was configured locally during this implementation; it is not committed. Do not use the OpenAI API key as this token. For another installation, generate a new random token with at least 32 bytes of entropy.
 
@@ -121,4 +129,24 @@ The tool sends an authenticated HTTP request to the Orb server. The browser appl
 
 On 2026-10-12, the owner followed the voice test above and confirmed that the expression integration worked in a live call. This is owner-reported manual validation, separate from the automated transport and tool tests.
 
-Missing credentials disable the tool with a startup warning. A missing browser, disconnect, invalid command, or missing acknowledgement produces a tool error. A timeout means application was not confirmed, not proof that nothing changed; commands are not automatically retried. The acknowledgement confirms the browser called the rendering API, not that the user saw it. Restart the voice session after an expression-connection failure. `web_search` and `get_local_time` are not enabled by this change.
+Missing credentials disable the tool with a startup warning. A missing browser, disconnect, invalid command, or missing acknowledgement produces a tool error. A timeout means application was not confirmed, not proof that nothing changed; commands are not automatically retried. The acknowledgement confirms the browser called the rendering API, not that the user saw it. Restart the voice session after an expression-connection failure. `web_search` and `get_local_time` work independently of the expression bridge.
+
+### Local time and web search
+
+Both tools are registered with Pi's native `defineTool` in `src/agents/ava/tools/` and selected by the voice entry point. Pi retains the agent loop, tool validation, result recording, and conversation history. Terminal and Telegram retain their existing configuration.
+
+- `get_local_time` returns a fresh date, time, weekday, UTC offset, and UTC timestamp for `America/Sao_Paulo`. It uses Node's clock and `Intl`, without a network request or a dependency on the host's default time zone.
+- `web_search` accepts a focused query and calls OpenAI's hosted `web_search` through the Responses API. It uses `OPENAI_API_KEY` from the same environment file as the Live connection. The search model defaults to `gpt-6-astra`; optionally set `AVA_WEB_SEARCH_MODEL` to another Responses model that supports web search. This selection is separate from `AVA_MODEL_ID` and incurs its own model/search API usage.
+
+The installed Pi tool API describes callable functions, so the OpenAI hosted tool is wrapped in one native Pi tool. Each execution makes one Responses request, forces search, sets `store: false`, and sends only the query rather than Pi's conversation history. There is no second application-managed agent loop or search conversation. Returned text includes separate lists of cited and consulted sources. See the [official web-search guide](https://developers.openai.com/api/docs/guides/tools-web-search).
+
+Search has a 60-second timeout, a 2000-character query limit, and a 4096-token output budget. Incomplete results, missing search execution, API errors, and malformed responses become tool errors. Session cancellation aborts the request; no automatic retry is performed. Raw provider errors and credentials are not added to tool results.
+
+Restart both applications and start a new Live session using the same commands as above. The backend logs `Voice tools enabled:` at startup. Try:
+
+1. "Ava, use get_local_time e me diga a data e a hora em São Paulo."
+2. "Ava, pesquise na web uma notícia recente sobre exploração espacial e cite a fonte."
+
+The matching Orb changes prompt GPT-Live to delegate these requests and preserve source URLs. URLs and Markdown links relayed in its transcript become clickable, without interpreting transcript content as HTML. This still depends on GPT-Live relaying the links; it is not a separate source-delivery protocol.
+
+The eight time/search tests use a fixed clock and injected HTTP responses. No paid OpenAI search was performed during implementation; account/model access and the new live voice flow still need a manual test.
